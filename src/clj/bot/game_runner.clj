@@ -1,0 +1,122 @@
+(ns bot.game-runner
+  "Headless Runner: spielt eine komplette Partie zwischen zwei Bots.
+  Regelauswertung läuft ausschließlich über game.core/process-action;
+  dieser Namespace orchestriert nur, welche Seite wann gefragt wird.
+  Roher @state wird hier NUR für Mechanik benutzt (Resolver, Prompt-eid,
+  Progress-Fingerprint) — Bot-Input ist immer bot.view/view-for."
+  (:require
+   [bot.cards :as cards]
+   [bot.legal :as legal]
+   [bot.log :as blog]
+   [bot.protocol :as bp]
+   [bot.view :as view]
+   [game.core :as core]
+   [game.core.set-up :as setup]))
+
+(defn- raw-prompt [state side]
+  (-> @state side :prompt seq first))
+
+(defn- actionable-prompt? [state side]
+  (when-let [p (raw-prompt state side)]
+    (not (contains? #{:waiting :run} (:prompt-type p)))))
+
+(defn next-actor
+  [state]
+  (let [s @state]
+    (cond
+      (:winner s) nil
+      (actionable-prompt? state :corp) [:corp :prompt]
+      (actionable-prompt? state :runner) [:runner :prompt]
+
+      (or (seq (:encounters s)) (:run s))
+      (let [no-action (or (:no-action (peek (:encounters s)))
+                          (:no-action (:run s)))]
+        (if no-action [:runner :run] [:corp :run]))
+
+      (:corp-phase-12 s) [:corp :phase-12]
+      (:runner-phase-12 s) [:runner :phase-12]
+      (:end-turn s) [(if (= (:active-player s) :corp) :runner :corp) :start-turn]
+      :else [(:active-player s) :action])))
+
+(defn- options-for [view side kind]
+  (case kind
+    :prompt     (legal/prompt-options view side)
+    :run        (legal/run-actions view side)
+    :phase-12   [(legal/action "end-phase-12" nil "end phase 1.2")]
+    :start-turn [(legal/action "start-turn" nil "start turn")]
+    :action     (legal/turn-actions view side)))
+
+(defn- apply-choice!
+  [state side kind chosen]
+  (if (= kind :prompt)
+    (let [eid (:eid (raw-prompt state side))]
+      (case (:type chosen)
+        :card   (core/process-action "select" state side {:card (:card chosen) :eid eid})
+        :number (core/process-action "choice" state side {:choice (:value chosen) :eid eid})
+        :button (core/process-action "choice" state side {:choice {:uuid (:uuid chosen)} :eid eid})))
+    (core/process-action (:command chosen) state side (:args chosen))))
+
+(defn- fingerprint
+  "Kompakter Zustands-Abdruck, um No-Op-Aktionen zu erkennen."
+  [state]
+  (let [s @state]
+    [(get-in s [:corp :click]) (get-in s [:runner :click])
+     (get-in s [:corp :credit]) (get-in s [:runner :credit])
+     (count (get-in s [:corp :prompt])) (count (get-in s [:runner :prompt]))
+     (:eid (raw-prompt state :corp)) (:eid (raw-prompt state :runner))
+     (:turn s) (:active-player s) (:end-turn s)
+     (:corp-phase-12 s) (:runner-phase-12 s)
+     (select-keys (:run s) [:phase :position :no-action :server])
+     (count (:encounters s)) (:no-action (peek (:encounters s)))
+     (count (:log s)) (:winner s)]))
+
+(defn- step!
+  "Eine Entscheidung: Bot fragen, anwenden, loggen. No-Ops: Option streichen,
+  Bot erneut fragen. Wirft, wenn keine Option den State bewegt."
+  [state side kind bot log-path step-no]
+  (let [v (view/view-for state side)]
+    (loop [options (vec (options-for v side kind))]
+      (when (empty? options)
+        (throw (ex-info "Keine ausführbare Option übrig"
+                        {:side side :kind kind :step step-no
+                         :prompt (get-in v [side :prompt-state])})))
+      (let [decision (if (= kind :prompt)
+                       (bp/on-prompt bot v (get-in v [side :prompt-state]) options)
+                       (bp/decide bot v options))
+            chosen (or (:action decision) (:option decision))
+            before (fingerprint state)
+            _ (apply-choice! state side kind chosen)
+            progressed? (not= before (fingerprint state))]
+        (blog/append-decision! log-path
+                               {:turn (:turn @state 0)
+                                :phase (view/phase-of v)
+                                :side side
+                                :kind kind
+                                :options (mapv :label options)
+                                :choice (:label chosen)
+                                :reason (:reason decision)
+                                :no-op (not progressed?)})
+        (when-not progressed?
+          (recur (vec (remove #{chosen} options))))))))
+
+(defn run-game
+  [{:keys [corp-bot runner-bot log-path max-steps corp-deck runner-deck]
+    :or {max-steps 5000
+         corp-deck cards/demo-corp
+         runner-deck cards/demo-runner}}]
+  (cards/load-all-cards!)
+  (let [state (setup/init-game
+               {:gameid 1
+                :format "casual"
+                :players [(cards/player-entry "Corp" corp-deck)
+                          (cards/player-entry "Runner" runner-deck)]})]
+    (loop [steps 0]
+      (if-let [[side kind] (when (< steps max-steps) (next-actor state))]
+        (let [bot (if (= side :corp) corp-bot runner-bot)]
+          (step! state side kind bot log-path steps)
+          (recur (inc steps)))
+        {:winner (:winner @state)
+         :reason (:reason @state)
+         :turn (:turn @state)
+         :steps steps
+         :completed? (some? (:winner @state))}))))
