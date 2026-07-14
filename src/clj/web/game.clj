@@ -190,10 +190,21 @@
           (throw e))))
     lobbies))
 
-(defn try-start-game
-  [db uid gameid]
+(defonce bot-notify-fn
+  ;; Hook: bot.seat/register! ersetzt den No-Op beim Systemstart.
+  ;; Indirektion statt Require, weil bot.seat selbst web.game braucht.
+  (atom (fn [_gameid] nil)))
+
+(defn notify-bots! [gameid]
+  (@bot-notify-fn gameid)
+  nil)
+
+(defn start-game!
+  "Startet eine Lobby ohne first-player-Check (Bot-vs-Bot hat keinen
+  menschlichen first-player). Menschliche Starts laufen über try-start-game."
+  [db gameid]
   (let [{:keys [players started] :as lobby} (app-state/get-lobby gameid)]
-    (when (and lobby (lobby/first-player? uid lobby) (not started))
+    (when (and lobby (not started))
       (let [now (inst/now)
             replay-record (stats/fetch-replay-record db (:replay-id lobby))
             replay-timestamp (:replay-timestamp lobby)
@@ -205,7 +216,14 @@
           (stats/game-started db lobby?)
           (lobby/send-lobby-state lobby?)
           (lobby/broadcast-lobby-list)
-          (send-state-to-participants :game/start lobby? (diffs/public-states (:state lobby?))))))))
+          (send-state-to-participants :game/start lobby? (diffs/public-states (:state lobby?)))
+          (notify-bots! gameid))))))
+
+(defn try-start-game
+  [db uid gameid]
+  (let [{:keys [started] :as lobby} (app-state/get-lobby gameid)]
+    (when (and lobby (lobby/first-player? uid lobby) (not started))
+      (start-game! db gameid))))
 
 (defmethod ws/-msg-handler :game/start
   game--start
@@ -264,7 +282,8 @@
              lobby? (lobby/join-lobby! db user uid ?data nil lobby)]
          (when lobby?
            (send-state-to-uid! uid :game/start lobby? (diffs/public-states (:state lobby?)))
-           (update-and-send-diffs! main/handle-rejoin lobby? user)))))
+           (update-and-send-diffs! main/handle-rejoin lobby? user)
+           (notify-bots! (:gameid lobby?))))))
    (lobby/log-delay! timestamp id)))
 
 (defmethod ws/-msg-handler :game/concede
@@ -302,6 +321,7 @@
                (swap! app-state/app-state
                       update :lobbies lobby/handle-set-last-update gameid uid)
                (update-and-send-diffs! main/handle-action lobby side command args)
+               (notify-bots! gameid)
                (catch Exception e
                  (reset! state old-state)
                  (throw e))))
