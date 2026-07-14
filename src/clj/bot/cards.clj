@@ -61,6 +61,16 @@
    :cards [["Sure Gamble" 3] ["Diesel" 3] ["Dirty Laundry" 3]
            ["Corroder" 3] ["Gordian Blade" 3]]})
 
+(def bot-decks
+  "Registry der in der Lobby wählbaren Bot-Decks."
+  {"gateway-corp" gateway-corp
+   "gateway-runner" gateway-runner})
+
+(defn bot-deck-for
+  "Deck für eine Bot-Seite (\"Corp\"/\"Runner\") — vorerst fest System Gateway."
+  [side]
+  (get bot-decks (if (= side "Corp") "gateway-corp" "gateway-runner")))
+
 (defn- deck-entry [title qty]
   (let [card (server-card title)]
     (when-not card
