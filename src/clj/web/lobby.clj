@@ -183,7 +183,11 @@
                      bot-game)]
       (if bot-game
         (-> base
-            (assoc :bot-game bot-game :difficulty difficulty)
+            ;; F5: Bot-Deck kommt aus bot.roster, nie aus preconstructed
+            ;; Matchups. Ein gesetztes :precon würde handle-precon-decks beim
+            ;; Start dazu bringen, BEIDE Decks zu ersetzen — auch das des
+            ;; Menschen, der laut Spec sein eigenes Deck wählt.
+            (assoc :bot-game bot-game :difficulty difficulty :precon nil)
             (apply-bot-setup bot-game difficulty uid user side))
         base))))
 
@@ -487,8 +491,19 @@
           players (remove #(= uid (:uid %)) (:players lobby))
           spectators (remove #(= uid (:uid %)) (:spectators lobby))
           corp-spectators (remove #(= uid (:uid %)) (:corp-spectators lobby))
-          runner-spectators (remove #(= uid (:uid %)) (:runner-spectators lobby))]
-      (if (pos? (count (remove :bot players)))
+          runner-spectators (remove #(= uid (:uid %)) (:runner-spectators lobby))
+          human-players-remain? (pos? (count (remove :bot players)))
+          ;; F2: bot-vs-bot hat nie menschliche Player (beide Seiten Bots), die
+          ;; Player-Regel allein würde die Lobby beim ersten Spectator-Leave/
+          ;; Disconnect immer schließen. Solange dort noch ein Spectator
+          ;; zusieht, bleibt die Lobby bestehen; verlässt der letzte Spectator,
+          ;; wird sie geschlossen (Bots halten sie nicht offen). Bei vs-bot
+          ;; gilt weiterhin ausschließlich die Player-Regel.
+          bot-vs-bot-spectators-remain? (and (= "bot-vs-bot" (:bot-game lobby))
+                                             (pos? (+ (count spectators)
+                                                      (count corp-spectators)
+                                                      (count runner-spectators))))]
+      (if (or human-players-remain? bot-vs-bot-spectators-remain?)
         (-> lobbies
             (update gameid send-message leave-message)
             (assoc-in [gameid :players] players)
@@ -770,6 +785,11 @@
 (defn update-sides [lobby uid side]
   (let [first-player (first (:players lobby))]
     (cond
+      ;; F1: In Bot-Lobbys ist der Bot fest an eine Seite gebunden (Deck +
+      ;; :bots-Zuordnung). swap-side/change-side dissoc'en das Deck und
+      ;; verschieben den Player im Vektor, wodurch :bots danach auf die
+      ;; falsche Seite zeigt. Swap ist hier daher ein No-Op.
+      (:bot-game lobby) lobby
       (not= (:uid first-player) uid) lobby
       (some? side) (update lobby :players (fn [x] (mapv #(change-side % side) x)))
       :else (update lobby :players #(mapv swap-side %)))))

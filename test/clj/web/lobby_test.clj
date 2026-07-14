@@ -203,6 +203,74 @@
       (is (= #{:game-finished :update-deck-stats :update-game-stats :push-stats-update} @calls)
           "Normales Spiel: alle Stats wie bisher"))))
 
+(deftest f1-swap-sides-no-op-fuer-vs-bot
+  ;; F1: In einer vs-bot-Lobby zerlegt Swap die Bot-Seite (Deck-dissoc via
+  ;; swap-side/change-side, :bots zeigt danach auf die falsche Seite). Fix:
+  ;; update-sides ist bei :bot-game ein No-Op.
+  (let [l (mklobby {:bot-game "vs-bot" :side "Runner" :difficulty "random"
+                    :format "system-gateway" :title "t" :room "casual"})
+        before-players (:players l)
+        before-bots (:bots l)
+        gameid (:gameid l)
+        lobbies {gameid l}]
+    (testing "update-sides direkt: kein Swap, kein Set-Side"
+      (is (= l (lobby/update-sides l "uid-1" nil)))
+      (is (= l (lobby/update-sides l "uid-1" "Corp"))))
+    (testing "handle-swap-sides: Players/Seiten/Decks unverändert"
+      (let [after (get (lobby/handle-swap-sides nil lobbies gameid "uid-1" nil {:text "swap"}) gameid)]
+        (is (= before-players (:players after)))
+        (is (= before-bots (:bots after)))))))
+
+(deftest f2-bot-vs-bot-spectator-leave-lobby-bleibt
+  ;; F2a: bot-vs-bot mit 2 Spectators — einer geht, Lobby bleibt bestehen.
+  (let [l (mklobby {:bot-game "bot-vs-bot" :difficulty "random"
+                    :format "system-gateway" :title "t" :room "casual"})
+        gameid (:gameid l)
+        l (update l :spectators conj {:uid "uid-2" :user {:username "eve"}})
+        lobbies {gameid l}]
+    (with-redefs [app-state/uid->lobby (fn [ls uid] (get ls gameid))]
+      (let [result (lobby/handle-leave-lobby lobbies "uid-1" {:text "bye"})]
+        (is (some? (get result gameid)) "Lobby bleibt, solange noch ein Spectator zusieht")
+        (is (= ["uid-2"] (mapv :uid (get-in result [gameid :spectators]))))))))
+
+(deftest f2-bot-vs-bot-letzter-spectator-schliesst-lobby
+  ;; F2b: verlässt der letzte Spectator eine bot-vs-bot-Partie, wird sie
+  ;; geschlossen — Bots halten sie nicht offen.
+  (let [l (mklobby {:bot-game "bot-vs-bot" :difficulty "random"
+                    :format "system-gateway" :title "t" :room "casual"})
+        gameid (:gameid l)
+        lobbies {gameid l}]
+    (with-redefs [app-state/uid->lobby (fn [ls uid] (get ls gameid))]
+      (is (= {} (lobby/handle-leave-lobby lobbies "uid-1" {:text "bye"}))
+          "Letzter Spectator verlässt bot-vs-bot ⇒ Lobby geschlossen"))))
+
+(deftest f2-vs-bot-spectator-haelt-nicht-offen
+  ;; F2c: vs-bot bleibt bei der reinen Player-Regel — ein zusehender
+  ;; Spectator hält die Lobby NICHT offen, wenn der menschliche Player geht.
+  (let [l (mklobby {:bot-game "vs-bot" :side "Corp" :difficulty "random"
+                    :format "system-gateway" :title "t" :room "casual"})
+        gameid (:gameid l)
+        l (update l :spectators conj {:uid "uid-2" :user {:username "eve"}})
+        lobbies {gameid l}]
+    (with-redefs [app-state/uid->lobby (fn [ls uid] (get ls gameid))]
+      (is (= {} (lobby/handle-leave-lobby lobbies "uid-1" {:text "bye"}))
+          "vs-bot: Spectator hält die Lobby nicht offen, wenn der menschliche Player geht"))))
+
+(deftest f5-precon-neutralisiert-fuer-bot-game
+  ;; F5: Frontend schickt bei "vs. Bot" default gateway-type "Beginner" ⇒
+  ;; validate-precon würde :precon setzen ⇒ handle-precon-decks ersetzt beim
+  ;; Start BEIDE Decks. Für Bot-Lobbys muss :precon nil bleiben, das
+  ;; Mensch-Deck kommt vom Menschen, das Bot-Deck aus bot.roster.
+  (testing "vs-bot-Lobby: precon wird neutralisiert"
+    (let [l (mklobby {:bot-game "vs-bot" :side "Corp" :difficulty "random"
+                      :format "system-gateway" :gateway-type "Beginner"
+                      :title "t" :room "casual"})]
+      (is (nil? (:precon l)))))
+  (testing "Regression: normale Lobby setzt weiterhin precon"
+    (let [l (mklobby {:format "system-gateway" :gateway-type "Beginner"
+                      :title "t" :room "casual" :side "Any Side"})]
+      (is (= :beginner (:precon l))))))
+
 (deftest game-finished-schreibt-replay-fuer-bot-spiel
   (let [written (atom nil)
         state (atom {:winner :corp :reason "Agenda" :turn 7

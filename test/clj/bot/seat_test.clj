@@ -2,6 +2,7 @@
   (:require
    [bot.cards :as bot-cards]
    [bot.game-runner :as runner]
+   [bot.log :as blog]
    [bot.random :as bot-random]
    [bot.seat :as seat]
    [clojure.edn]
@@ -162,6 +163,32 @@
        {:bot-game "bot-vs-bot" :difficulty "random"
         :format "system-gateway" :title "t" :room "casual"})
       (is (some? @started) "bot-start-fn wurde mit der gameid gerufen"))))
+
+(deftest f3-bump-last-update-ohne-lobby-kein-geist
+  ;; F3: parallel zu bot-step! kann close-lobby! die Lobby bereits entfernt
+  ;; haben. Ein plain assoc-in würde dann einen Geister-Eintrag
+  ;; {gameid {:last-update ...}} erzeugen. Der guarded Bump ist ein No-Op.
+  (let [result (#'seat/bump-last-update {} "geister-gameid")]
+    (is (= {} result))
+    (is (not (contains? result "geister-gameid")))))
+
+(deftest f3-bump-last-update-mit-lobby
+  ;; Regression: existiert die Lobby, wird :last-update wie bisher gesetzt.
+  (let [ls {"g1" {:last-update :old}}
+        result (#'seat/bump-last-update ls "g1")]
+    (is (not= :old (get-in result ["g1" :last-update])))))
+
+(deftest f4-concede-bot-loggt-stacktrace
+  ;; F4 (Spec): Fehler + Stacktrace ins Decision-Log.
+  (let [logged (atom nil)]
+    (with-redefs [blog/append-event! (fn [_path m] (reset! logged m))]
+      (#'seat/concede-bot! {:gameid "g-test"} :corp (ex-info "boom" {:foo 1})))
+    (is (= :concede (:event @logged)))
+    (is (= :corp (:side @logged)))
+    (is (= "boom" (:error @logged)))
+    (is (= {:foo 1} (:data @logged)))
+    (is (string? (:stacktrace @logged)))
+    (is (not (clojure.string/blank? (:stacktrace @logged))))))
 
 (deftest try-create-lobby-startet-vs-bot-nicht
   (let [started (atom nil)]

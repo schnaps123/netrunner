@@ -8,6 +8,7 @@
    [bot.game-runner :as runner]
    [bot.log :as blog]
    [cljc.java-time.instant :as inst]
+   [clojure.stacktrace :as stacktrace]
    [game.main :as main]
    [taoensso.timbre :as timbre]
    [web.app-state :as app-state]
@@ -56,9 +57,21 @@
                       {:event :concede
                        :side side
                        :error (ex-message e)
-                       :data (ex-data e)})
+                       :data (ex-data e)
+                       ;; F4 (Spec): Fehler + Stacktrace ins Decision-Log
+                       :stacktrace (with-out-str (stacktrace/print-stack-trace e))})
   (timbre/warn e (str "Bot concedet nach Fehler in " (:gameid lobby) " (" side ")"))
   (game/update-and-send-diffs! main/handle-concede lobby side))
+
+(defn- bump-last-update
+  "Guarded last-update-Bump: no-op, wenn `gameid` nicht (mehr) in `lobbies`
+  steckt. Verhindert einen Geister-Eintrag {gameid {:last-update ...}}, den
+  ein plain assoc-in erzeugen würde, falls ein paralleles close-lobby! die
+  Lobby zwischen bot-to-act und diesem Bump bereits entfernt hat."
+  [lobbies gameid]
+  (if (contains? lobbies gameid)
+    (assoc-in lobbies [gameid :last-update] (inst/now))
+    lobbies))
 
 (defn- bot-step!
   "Eine Bot-Entscheidung (läuft auf dem Game-Thread der Lobby).
@@ -77,7 +90,7 @@
                        runner/apply-choice! lobby side' kind' chosen))})
         ;; Bot-Aktivität zählt als Aktivität (sonst räumt clear-inactive-lobbies
         ;; laufende Bot-Partien ab)
-        (swap! app-state/app-state assoc-in [:lobbies gameid :last-update] (inst/now))
+        (swap! app-state/app-state update :lobbies bump-last-update gameid)
         true
         (catch Exception e
           (concede-bot! lobby side e)
