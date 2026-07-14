@@ -53,8 +53,23 @@
       (case (:type chosen)
         :card   (core/process-action "select" state side {:card (:card chosen) :eid eid})
         :number (core/process-action "choice" state side {:choice (:value chosen) :eid eid})
+        :title  (core/process-action "choice" state side {:choice (:value chosen) :eid eid})
         :button (core/process-action "choice" state side {:choice {:uuid (:uuid chosen)} :eid eid})))
     (core/process-action (:command chosen) state side (:args chosen))))
+
+(defn- counter-digest
+  "Summe aller Karten-Counter einer Seite (installierte Karten, Play-Area).
+  Nötig, weil z.B. Pay-Credit-Selects nur Counter bewegen (Overclock & Co.),
+  ohne Klicks/Credits/Prompt-eid zu ändern."
+  [s side]
+  (let [cards (concat (get-in s [side :play-area])
+                      (get-in s [side :current])
+                      (get-in s [side :rig :program])
+                      (get-in s [side :rig :hardware])
+                      (get-in s [side :rig :resource])
+                      (mapcat (fn [[_ srv]] (concat (:ices srv) (:content srv)))
+                              (get-in s [side :servers])))]
+    (reduce + 0 (mapcat (comp vals :counter) cards))))
 
 (defn- fingerprint
   "Kompakter Zustands-Abdruck, um No-Op-Aktionen zu erkennen."
@@ -64,10 +79,20 @@
      (get-in s [:corp :credit]) (get-in s [:runner :credit])
      (count (get-in s [:corp :prompt])) (count (get-in s [:runner :prompt]))
      (:eid (raw-prompt state :corp)) (:eid (raw-prompt state :runner))
+     ;; Prompt-Text ändert sich bei mehrstufigen Prompts mit stabiler eid
+     ;; (z.B. "Choose a credit providing card (1 of 3)"), Counter bei
+     ;; Pay-Credit-Selects — beides sonst unsichtbare Fortschritte.
+     (:msg (raw-prompt state :corp)) (:msg (raw-prompt state :runner))
+     (counter-digest s :corp) (counter-digest s :runner)
      (:turn s) (:active-player s) (:end-turn s)
      (:corp-phase-12 s) (:runner-phase-12 s)
      (select-keys (:run s) [:phase :position :no-action :server])
      (count (:encounters s)) (:no-action (peek (:encounters s)))
+     ;; Multi-Select: jeder Kartenklick toggelt nur das :selected-Flag
+     ;; ([side :selected], game.core.actions/select) — ohne diesen Eintrag
+     ;; sähe der No-Op-Check echte Selektionsfortschritte nicht.
+     (mapv (fn [sel] (mapv :cid (:cards sel))) (get-in s [:corp :selected]))
+     (mapv (fn [sel] (mapv :cid (:cards sel))) (get-in s [:runner :selected]))
      (count (:log s)) (:winner s)]))
 
 (defn- step!

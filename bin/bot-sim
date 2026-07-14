@@ -1,0 +1,10 @@
+#!/usr/bin/env sh
+
+# Spielt n Partien Random-Bot vs. Random-Bot und druckt den Abschlussreport.
+# Beispiele:
+#   bin/bot-sim 5
+#   bin/bot-sim 50 --seed 1000
+#   bin/bot-sim 10 --corp-deck decks/mein-corp.edn --runner-deck decks/mein-runner.edn
+# Läuft wie die übrigen bin/-Wrapper im Server-Container (bin/lein).
+
+bin/lein run -m bot.sim "$@"

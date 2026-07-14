@@ -34,6 +34,28 @@
    :cards [["Hedge Fund" 3] ["PAD Campaign" 3] ["Ice Wall" 3]
            ["Enigma" 3] ["Priority Requisition" 3]]})
 
+(def gateway-corp
+  "Offizielles System-Gateway-Corp-Starterdeck (34 Karten, Null Signal Games,
+  NRDB-Decklist 0665c5c7-f7f1-4674-86b5-ca4e371888f2)."
+  {:identity "The Syndicate: Profit over Principle"
+   :cards [["Offworld Office" 3] ["Send a Message" 2] ["Superconducting Hub" 2]
+           ["Nico Campaign" 2] ["Regolith Mining License" 2] ["Urtica Cipher" 2]
+           ["Manegarm Skunkworks" 1]
+           ["Government Subsidy" 2] ["Hedge Fund" 3] ["Seamless Launch" 2]
+           ["Brân 1.0" 2] ["Diviner" 2] ["Karunā" 2] ["Palisade" 3]
+           ["Tithe" 2] ["Whitespace" 2]]})
+
+(def gateway-runner
+  "Offizielles System-Gateway-Runner-Starterdeck (30 Karten, Null Signal Games,
+  NRDB-Decklist d71397b7-af7b-475c-8984-18360a64f6ee)."
+  {:identity "The Catalyst: Convention Breaker"
+   :cards [["Creative Commission" 2] ["Jailbreak" 3] ["Overclock" 2]
+           ["Sure Gamble" 3] ["Tread Lightly" 2] ["VRcation" 2]
+           ["Docklands Pass" 1] ["Pennyshaver" 1]
+           ["Carmen" 2] ["Cleaver" 2] ["Mayfly" 2] ["Unity" 2]
+           ["Red Team" 1] ["Smartware Distributor" 2]
+           ["Telework Contract" 2] ["Verbal Plasticity" 1]]})
+
 (def demo-runner
   {:identity "Kate \"Mac\" McCaffrey: Digital Tinker"
    :cards [["Sure Gamble" 3] ["Diesel" 3] ["Dirty Laundry" 3]

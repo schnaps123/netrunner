@@ -146,18 +146,47 @@
         (when (= :movement (:phase run))
           [(action "jack-out" nil "jack out")]))))))
 
+(defn- with-hosted
+  "Karte plus alle (rekursiv) gehosteten Karten."
+  [c]
+  (cons c (mapcat with-hosted (:hosted c))))
+
 (defn- visible-cards
   "Alles, was side für Select-Prompts anklicken könnte (nur View-Inhalte)."
   [view side]
-  (concat
-   (get-in view [side :hand])
-   (installed-corp-cards view)
-   (runner-rig-cards view)
-   (get-in view [:runner :rig :facedown])
-   (get-in view [:corp :discard])
-   (get-in view [:runner :discard])
-   (get-in view [side :play-area])
-   (get-in view [side :scored])))
+  (mapcat with-hosted
+          (concat
+           (keep #(get-in view [% :identity]) [:corp :runner])
+           (get-in view [side :hand])
+           (installed-corp-cards view)
+           (runner-rig-cards view)
+           (get-in view [:runner :rig :facedown])
+           (get-in view [:corp :discard])
+           (get-in view [:runner :discard])
+           (mapcat #(concat (get-in view [% :play-area])
+                            (get-in view [% :scored])
+                            (get-in view [% :current])
+                            (get-in view [% :set-aside]))
+                   [:corp :runner]))))
+
+(defn- select-card-options
+  "Anklickbare Karten eines Select-Prompts. Die Engine liefert in :selectable
+  die cids aller legalen Ziele (game.core.prompts/show-select) — damit wird
+  gefiltert, sofern vorhanden; sonst bleibt das Retry-Aussortieren des Runners
+  die Absicherung. Bereits selektierte Karten (Multi-Select, :selected-Flag
+  aus der View) werden nicht erneut angeboten, sonst würde der zweite Klick
+  sie nur wieder abwählen (game.core.actions/select ist ein Toggle)."
+  [view side prompt]
+  (let [selectable (set (:selectable prompt))
+        cards (->> (visible-cards view side)
+                   (filter :cid)
+                   (remove :selected))
+        cards (if (seq selectable)
+                (filter #(selectable (:cid %)) cards)
+                cards)]
+    ;; ein cid kann mehrfach sichtbar sein (z. B. Host + hosted-Liste)
+    (for [c (vals (into {} (map (juxt :cid identity)) cards))]
+      {:type :card :card c :label (or (:title c) "facedown card")})))
 
 (defn prompt-options
   [view side]
@@ -167,11 +196,16 @@
       (= :select (:prompt-type prompt))
       (vec
        (concat
-        (for [c (visible-cards view side) :when (:cid c)]
-          {:type :card :card c :label (or (:title c) "facedown card")})
+        (select-card-options view side prompt)
         ;; manche Select-Prompts haben zusätzlich Buttons (z. B. "Done")
         (for [c (when (sequential? choices) choices)]
           {:type :button :uuid (:uuid c) :label (str (:value c))})))
+
+      ;; "Nenne eine Karte": Engine erwartet einen Titel-String; die legalen
+      ;; Titel stehen in :autocomplete (game.core.engine, Zeile ~448).
+      (and (map? choices) (:card-title choices))
+      (mapv (fn [t] {:type :title :value t :label t})
+            (:autocomplete choices))
 
       (= :trace (:prompt-type prompt))
       (mapv (fn [n] {:type :number :value n :label (str n)})

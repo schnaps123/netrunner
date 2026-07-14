@@ -66,6 +66,49 @@
       (is (every? #(= :button (:type %)) options))
       (is (every? :uuid options) "Button-Optionen tragen die uuid für den choice-Command"))))
 
+(deftest card-title-prompt-bietet-autocomplete-titel
+  (do-game
+    (new-game)
+    ;; erzeugt denselben Prompt wie z.B. "Complete Image": Engine berechnet
+    ;; die legalen Titel vor (:autocomplete, game.core.engine ~448)
+    (core/resolve-ability state :corp
+                          {:prompt "Name a Runner card"
+                           :choices {:card-title (fn [_ _ _ _ [target]]
+                                                   (= "Sure Gamble" (:title target)))}
+                           :effect (fn [_ _ _ _ _])}
+                          (get-in @state [:corp :identity]) nil)
+    (let [options (legal/prompt-options (view/view-for state :corp) :corp)]
+      (is (= [{:type :title :value "Sure Gamble" :label "Sure Gamble"}]
+             options)
+          "genau die von der Engine erlaubten Titel, als :title-Optionen"))))
+
+(deftest multi-select-bietet-nur-selectable-und-keine-schon-gewaehlten
+  (do-game
+    (new-game {:corp {:hand ["Ice Wall" "Enigma" "Hedge Fund"] :credits 20}})
+    (play-from-hand state :corp "Ice Wall" "HQ")
+    (play-from-hand state :corp "Enigma" "R&D")
+    (core/resolve-ability state :corp
+                          {:prompt "Choose 2 pieces of ice"
+                           :choices {:max 2
+                                     :card #(and (:installed %)
+                                                 (= "ICE" (:type %)))}
+                           :effect (fn [_ _ _ _ _])}
+                          (get-in @state [:corp :identity]) nil)
+    (let [options (legal/prompt-options (view/view-for state :corp) :corp)
+          cards (filter #(= :card (:type %)) options)]
+      (is (= #{"Ice Wall" "Enigma"} (set (map :label cards)))
+          ":selectable filtert Handkarten/Nicht-Ice weg")
+      (is (= ["Done"] (map :label (filter #(= :button (:type %)) options)))
+          "Done-Button des Multi-Selects wird angeboten")
+      ;; erste Karte anklicken -> darf nicht erneut angeboten werden,
+      ;; sonst wäre der zweite Klick nur ein Deselect-Toggle
+      (let [ice-wall (:card (first (filter #(= "Ice Wall" (:label %)) cards)))
+            eid (:eid (first (get-in @state [:corp :prompt])))]
+        (core/process-action "select" state :corp {:card ice-wall :eid eid})
+        (let [options' (legal/prompt-options (view/view-for state :corp) :corp)]
+          (is (= #{"Enigma"} (set (map :label (filter #(= :card (:type %)) options'))))
+              "bereits selektierte Karte verschwindet aus den Optionen"))))))
+
 (deftest run-optionen-approach-und-encounter
   (do-game
     (new-game {:corp {:hand ["Ice Wall"] :credits 10}})
