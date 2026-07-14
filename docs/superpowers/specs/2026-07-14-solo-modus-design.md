@@ -55,10 +55,14 @@ Schutz bestehender Flows:
   (Spectator) bleibt erlaubt.
 - Verlässt der Mensch die Partie (Leave/Disconnect): Lobby gilt als leer, wenn kein
   menschlicher Player mehr da ist → `close-lobby!`; der Bot-Loop wird gestoppt.
-- Stats/Mongo (`game-started`, `game-finished`, `update-deck-stats`,
-  `update-game-stats`, `push-stats-update`) werden für Bot-Partien komplett
-  übersprungen (Bot-User hat kein `:_id`).
-- `save-replay` wird für Bot-Spiele deaktiviert (ein Sonderfall weniger).
+- User-/Deck-Stats (`update-deck-stats`, `update-game-stats`, `push-stats-update`)
+  werden für Bot-Partien übersprungen (Bot-User hat kein `:_id`, würde mit nil-Id
+  in die users-Collection schreiben).
+- `game-started` und `game-finished` laufen für Bot-Partien NORMAL: sie brauchen
+  kein User-`:_id` (nur `[:username :emailhash]` via `select-keys`) und tragen die
+  Replay-Aufzeichnung — `:history` füllt sich über `update-and-send-diffs!`, durch
+  das auch alle Bot-Aktionen laufen. `save-replay` bleibt damit für Bot-Spiele
+  voll funktionsfähig; Bot-Partien erscheinen in der Spielhistorie des Menschen.
 
 ## Abschnitt 2: Bot-Seat-Laufzeit (`src/clj/bot/seat.clj`, neu)
 
@@ -135,7 +139,9 @@ Tests (`test/clj/bot/seat_test.clj`):
 - Lobby-Erzeugung vs-bot und bot-vs-bot (Bot-Player korrekt, Auto-Start).
 - notify!-Loop mit `*think-ms*` = 0: Partie läuft bis zum Ende ohne Hänger.
 - Concede-Pfad bei künstlich leeren Optionen.
-- Stats-Skip und `close-lobby!` bei Mensch-Leave.
+- Stats-Skip (nur User-/Deck-Stats) und `close-lobby!` bei Mensch-Leave.
+- Replay: `game-logs`-Record existiert und enthält `:replay` nach Bot-Partie mit
+  aktiviertem `save-replay`.
 - Bestehende Sim-Tests bleiben grün (`decide-one!`-Extraktion ist reines Refactor).
 - Vor Commit: relevante Test-Namespaces + `npm run cljs:build`.
 
@@ -144,11 +150,12 @@ Tests (`test/clj/bot/seat_test.clj`):
 - Bot-Rejoin nach Serverneustart.
 - Weitere Schwierigkeitsgrade (Registry ist vorbereitet).
 - Bot-Deck-Upload / eigene Decks für den Bot.
-- Replay-Speicherung für Bot-Spiele (deaktiviert).
 
 ## Offene Punkte / geklärte Entscheidungen
 
 - Bot-Decks: nur eingebaute Starterdecks (User-Entscheidung).
+- Replay: bleibt für Bot-Spiele erhalten; nur User-/Deck-Stats werden geskippt
+  (User-Entscheidung, 2026-07-14).
 - Bot-Fehler: Retry (No-Op-Streichung), dann concede (User-Entscheidung).
 - Bedenkzeit: 1–2 s auch bei bot-vs-bot (User-Entscheidung).
 - Integrationsansatz: Hook in `web.game` (User-Entscheidung).
