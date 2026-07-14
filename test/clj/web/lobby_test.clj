@@ -3,7 +3,8 @@
    [bot.cards :as bot-cards]
    [clojure.test :refer :all]
    [web.app-state :as app-state]
-   [web.lobby :as lobby]))
+   [web.lobby :as lobby]
+   [web.stats]))
 
 (use-fixtures :once (fn [f] (bot-cards/load-all-cards!) (f)))
 
@@ -161,3 +162,57 @@
     (is (= "vs-bot" (:bot-game summary)) ":bot-game geht an den Client")
     (is (not (contains? summary :bots)) "Bot-Instanzen nie an den Client")
     (is (not (contains? summary :bot-thinking?)))))
+
+(deftest handle-leave-lobby-schliesst-bot-lobby
+  (let [l (mklobby {:bot-game "vs-bot" :side "Corp" :difficulty "random"
+                    :format "system-gateway" :title "t" :room "casual"})
+        gameid (:gameid l)
+        lobbies {gameid l}]
+    (with-redefs [app-state/uid->lobby (fn [ls uid] (get ls gameid))]
+      (is (= {} (lobby/handle-leave-lobby lobbies "uid-1" {:text "bye"}))
+          "Ohne menschlichen Player wird die Lobby entfernt, Bot hält sie nicht offen"))))
+
+(deftest handle-leave-lobby-normal-unveraendert
+  ;; Regression: normale 2-Spieler-Lobby bleibt bestehen, wenn einer geht
+  (let [l {:gameid "g1"
+           :players [{:uid "u1" :user {:username "a"}}
+                     {:uid "u2" :user {:username "b"}}]
+           :spectators [] :corp-spectators [] :runner-spectators []
+           :messages []}
+        lobbies {"g1" l}]
+    (with-redefs [app-state/uid->lobby (fn [ls uid] (get ls "g1"))]
+      (let [result (lobby/handle-leave-lobby lobbies "u1" {:text "bye"})]
+        (is (= ["u2"] (mapv :uid (get-in result ["g1" :players]))))))))
+
+(deftest close-lobby-stats-skip-fuer-bot-spiele
+  (let [calls (atom #{})
+        record (fn [k] (fn [& _] (swap! calls conj k)))]
+    (with-redefs [web.stats/game-finished (record :game-finished)
+                  web.stats/update-deck-stats (record :update-deck-stats)
+                  web.stats/update-game-stats (record :update-game-stats)
+                  web.stats/push-stats-update (record :push-stats-update)
+                  lobby/leave-pool! (fn [& _])]
+      (reset! calls #{})
+      (lobby/close-lobby! nil {:gameid "g-bot" :started true :bot-game "vs-bot"
+                               :players [] :spectators []})
+      (is (= #{:game-finished} @calls)
+          "Bot-Spiel: nur game-finished (Replay), keine User-/Deck-Stats")
+      (reset! calls #{})
+      (lobby/close-lobby! nil {:gameid "g-normal" :started true
+                               :players [] :spectators []})
+      (is (= #{:game-finished :update-deck-stats :update-game-stats :push-stats-update} @calls)
+          "Normales Spiel: alle Stats wie bisher"))))
+
+(deftest game-finished-schreibt-replay-fuer-bot-spiel
+  (let [written (atom nil)
+        state (atom {:winner :corp :reason "Agenda" :turn 7
+                     :options {:save-replay true}
+                     :history [{:diff 1} {:diff 2}]
+                     :corp {:user {:username "david"}}
+                     :runner {:user {:username "Bot (Random)"}}})]
+    (with-redefs [monger.collection/update (fn [_db _coll _q update-doc]
+                                             (reset! written update-doc))
+                  web.stats/delete-old-replay (fn [& _] nil)]
+      (web.stats/game-finished nil {:gameid "g-bot" :state state :bot-game "vs-bot"})
+      (is (string? (get-in @written ["$set" :replay]))
+          "Replay-JSON wird auch für Bot-Spiele geschrieben"))))

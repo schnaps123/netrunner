@@ -480,7 +480,7 @@
           spectators (remove #(= uid (:uid %)) (:spectators lobby))
           corp-spectators (remove #(= uid (:uid %)) (:corp-spectators lobby))
           runner-spectators (remove #(= uid (:uid %)) (:runner-spectators lobby))]
-      (if (pos? (count players))
+      (if (pos? (count (remove :bot players)))
         (-> lobbies
             (update gameid send-message leave-message)
             (assoc-in [gameid :players] players)
@@ -496,9 +496,12 @@
   ([db {:keys [gameid pool started on-close] :as lobby} skip-on-close]
    (when started
      (stats/game-finished db lobby)
-     (stats/update-deck-stats db lobby)
-     (stats/update-game-stats db lobby)
-     (stats/push-stats-update db lobby))
+     ;; Bot-User haben kein :_id — User-/Deck-Stats würden mit nil-Id schreiben.
+     ;; game-finished bleibt: es trägt die Replay-Speicherung.
+     (when-not (:bot-game lobby)
+       (stats/update-deck-stats db lobby)
+       (stats/update-game-stats db lobby)
+       (stats/push-stats-update db lobby)))
    (swap! app-state/app-state update :lobbies dissoc gameid)
    (doseq [uid (keep :uid (get-players-and-spectators lobby))]
      (clear-lobby-state uid))
