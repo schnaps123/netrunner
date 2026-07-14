@@ -4,19 +4,25 @@
   (:require
    [clojure.java.io :as io]))
 
+(defn append-event!
+  "Schreibt eine beliebige Map als eine EDN-Zeile (z.B. Fehler/Concede)."
+  [path m]
+  (io/make-parents (io/file path))
+  (spit path (str (pr-str m) "\n") :append true)
+  nil)
+
 (defn decision-entry
-  [{:keys [turn phase side kind options choice reason no-op]}]
-  {:turn turn
-   :phase phase
-   :side side
-   :kind kind
-   :options (vec options)
-   :choice choice
-   :reason reason
-   :no-op (boolean no-op)})
+  [{:keys [turn phase side kind options choice reason no-op difficulty]}]
+  (cond-> {:turn turn
+           :phase phase
+           :side side
+           :kind kind
+           :options (vec options)
+           :choice choice
+           :reason reason
+           :no-op (boolean no-op)}
+    difficulty (assoc :difficulty difficulty)))
 
 (defn append-decision!
   [path entry]
-  (io/make-parents (io/file path))
-  (spit path (str (pr-str (decision-entry entry)) "\n") :append true)
-  nil)
+  (append-event! path (decision-entry entry)))

@@ -29,3 +29,20 @@
         (is (= 2 (count lines)))
         (is (= [3 4] (map #(:turn (edn/read-string %)) lines))))
       (finally (.delete f)))))
+
+(deftest decision-entry-difficulty
+  (testing "difficulty wird übernommen, wenn vorhanden"
+    (is (= "random" (:difficulty (blog/decision-entry {:turn 1 :side :corp :difficulty "random"})))))
+  (testing "difficulty fehlt im Entry, wenn nicht übergeben"
+    (is (not (contains? (blog/decision-entry {:turn 1 :side :corp}) :difficulty)))))
+
+(deftest append-event-schreibt-edn-zeile
+  (let [f (java.io.File/createTempFile "bot-log" ".edn")
+        path (.getPath f)]
+    (blog/append-event! path {:event :concede :side :runner :error "kaputt"})
+    (blog/append-event! path {:event :info})
+    (let [lines (clojure.string/split-lines (slurp path))]
+      (is (= 2 (count lines)))
+      (is (= {:event :concede :side :runner :error "kaputt"}
+             (clojure.edn/read-string (first lines)))))
+    (.delete f)))
