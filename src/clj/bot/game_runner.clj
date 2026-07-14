@@ -16,7 +16,7 @@
 (defn- raw-prompt [state side]
   (-> @state side :prompt seq first))
 
-(defn- actionable-prompt? [state side]
+(defn actionable-prompt? [state side]
   (when-let [p (raw-prompt state side)]
     (not (contains? #{:waiting :run} (:prompt-type p)))))
 
@@ -46,7 +46,7 @@
     :start-turn [(legal/action "start-turn" nil "start turn")]
     :action     (legal/turn-actions view side)))
 
-(defn- apply-choice!
+(defn apply-choice!
   [state side kind chosen]
   (if (= kind :prompt)
     (let [eid (:eid (raw-prompt state side))]
@@ -95,10 +95,13 @@
      (mapv (fn [sel] (mapv :cid (:cards sel))) (get-in s [:runner :selected]))
      (count (:log s)) (:winner s)]))
 
-(defn- step!
-  "Eine Entscheidung: Bot fragen, anwenden, loggen. No-Ops: Option streichen,
-  Bot erneut fragen. Wirft, wenn keine Option den State bewegt."
-  [state side kind bot log-path step-no]
+(defn decide-one!
+  "Eine Bot-Entscheidung: Bot fragen, anwenden (via :apply-fn), loggen.
+  No-Ops: Option streichen, Bot erneut fragen. :log-extra wird in jeden
+  Log-Eintrag gemergt (z.B. {:difficulty \"random\"}).
+  Wirft ex-info \"Keine ausführbare Option übrig\", wenn nichts den State bewegt."
+  [{:keys [state side kind bot log-path apply-fn log-extra step-no]
+    :or {apply-fn apply-choice!}}]
   (let [v (view/view-for state side)]
     (loop [options (vec (options-for v side kind))]
       (when (empty? options)
@@ -110,17 +113,19 @@
                        (bp/decide bot v options))
             chosen (or (:action decision) (:option decision))
             before (fingerprint state)
-            _ (apply-choice! state side kind chosen)
+            _ (apply-fn state side kind chosen)
             progressed? (not= before (fingerprint state))]
-        (blog/append-decision! log-path
-                               {:turn (:turn @state 0)
-                                :phase (view/phase-of v)
-                                :side side
-                                :kind kind
-                                :options (mapv :label options)
-                                :choice (:label chosen)
-                                :reason (:reason decision)
-                                :no-op (not progressed?)})
+        (when log-path
+          (blog/append-decision! log-path
+                                 (merge {:turn (:turn @state 0)
+                                         :phase (view/phase-of v)
+                                         :side side
+                                         :kind kind
+                                         :options (mapv :label options)
+                                         :choice (:label chosen)
+                                         :reason (:reason decision)
+                                         :no-op (not progressed?)}
+                                        log-extra)))
         (when-not progressed?
           (recur (vec (remove #{chosen} options))))))))
 
@@ -138,7 +143,8 @@
     (loop [steps 0]
       (if-let [[side kind] (when (< steps max-steps) (next-actor state))]
         (let [bot (if (= side :corp) corp-bot runner-bot)]
-          (step! state side kind bot log-path steps)
+          (decide-one! {:state state :side side :kind kind :bot bot
+                        :log-path log-path :step-no steps})
           (recur (inc steps)))
         {:winner (:winner @state)
          :reason (:reason @state)

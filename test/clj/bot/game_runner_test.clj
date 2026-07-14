@@ -1,11 +1,13 @@
 (ns bot.game-runner-test
   (:require
+   [bot.cards :as cards]
    [bot.game-runner :as gr]
    [bot.random :as random]
    [clojure.edn :as edn]
    [clojure.java.io :as io]
    [clojure.string :as str]
    [clojure.test :refer :all]
+   [game.core.set-up :as setup]
    [game.test-framework :refer :all]))
 
 (deftest next-actor-aktionsphase
@@ -46,3 +48,26 @@
                   (str "Zeile unvollständig: " line))
               (is (every? string? (:options e)) "Optionen sind Labels, keine Karten-Maps")))))
       (finally (.delete log-file)))))
+
+(deftest decide-one!-nutzt-apply-fn-und-log-extra
+  (cards/load-all-cards!)
+  (let [state (setup/init-game
+               {:gameid 1 :format "casual"
+                :players [(cards/player-entry "Corp" cards/gateway-corp)
+                          (cards/player-entry "Runner" cards/gateway-runner)]})
+        applied (atom [])
+        f (java.io.File/createTempFile "decide-one" ".edn")
+        bot (random/random-bot 1)
+        ;; Nach init-game hat jede Seite den Keep/Mulligan-Prompt
+        [side kind] (gr/next-actor state)]
+    (gr/decide-one!
+     {:state state :side side :kind kind :bot bot
+      :log-path (.getPath f)
+      :log-extra {:difficulty "random"}
+      :apply-fn (fn [state side kind chosen]
+                  (swap! applied conj [side kind (:label chosen)])
+                  (gr/apply-choice! state side kind chosen))})
+    (is (= 1 (count @applied)) "apply-fn genau einmal aufgerufen (kein No-Op bei Mulligan)")
+    (let [entry (edn/read-string (first (str/split-lines (slurp f))))]
+      (is (= "random" (:difficulty entry)) "log-extra landet im Log-Eintrag"))
+    (.delete f)))
