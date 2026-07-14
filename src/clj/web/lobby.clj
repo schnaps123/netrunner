@@ -95,6 +95,12 @@
 
 (defmulti assign-tournament-properties identity)
 
+(defonce bot-start-fn
+  ;; Hook: bot.seat/register! ersetzt den No-Op beim Systemstart.
+  ;; Indirektion statt Require, weil web.game (das den Start ausführt)
+  ;; selbst web.lobby braucht.
+  (atom (fn [_db _gameid] nil)))
+
 (defn validate-precon
   [format client-precon client-gateway-type]
   (let [target (if (= format "system-gateway") client-gateway-type client-precon)
@@ -398,7 +404,9 @@
     (when lobby?
       (assign-tournament-properties lobby?)
       (send-lobby-state lobby?)
-      (broadcast-lobby-list))))
+      (broadcast-lobby-list)
+      (when (= "bot-vs-bot" (:bot-game lobby?))
+        (@bot-start-fn db (:gameid lobby?))))))
 
 (defmethod ws/-msg-handler :lobby/create
   lobby--create

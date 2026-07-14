@@ -135,3 +135,42 @@
         "next-actor würde Corp wählen")
     (is (nil? (#'seat/bot-to-act lby))
         "bot-to-act liefert nil — der Runner-Bot wartet")))
+
+(deftest bot-vs-bot-partie-laeuft-komplett-durch
+  (binding [seat/*think-ms* [0 0]]
+    (with-stub-io
+      (let [l (lobby/create-new-lobby
+               {:uid "u1" :user {:username "david"}
+                :options {:bot-game "bot-vs-bot" :difficulty "random"
+                          :format "system-gateway" :title "t" :room "casual"}})
+            gameid (:gameid l)]
+        (swap! app-state/app-state assoc-in [:lobbies gameid] l)
+        (game/start-game! nil gameid)
+        (let [state (:state (app-state/get-lobby gameid))]
+          (is (wait-until #(:winner @state) 120000)
+              "Partie Random vs. Random endet mit Sieger")
+          (is (pos? (:turn @state 0))))))))
+
+(deftest try-create-lobby-startet-bot-vs-bot-automatisch
+  (let [started (atom nil)]
+    (with-redefs [lobby/bot-start-fn (atom (fn [_db gameid] (reset! started gameid)))
+                  lobby/auto-select-decks (fn [_db l] l)
+                  lobby/send-lobby-state (fn [& _] nil)
+                  lobby/broadcast-lobby-list (fn [& _] nil)]
+      (lobby/try-create-lobby
+       nil "u1" {:username "david"}
+       {:bot-game "bot-vs-bot" :difficulty "random"
+        :format "system-gateway" :title "t" :room "casual"})
+      (is (some? @started) "bot-start-fn wurde mit der gameid gerufen"))))
+
+(deftest try-create-lobby-startet-vs-bot-nicht
+  (let [started (atom nil)]
+    (with-redefs [lobby/bot-start-fn (atom (fn [_db gameid] (reset! started gameid)))
+                  lobby/auto-select-decks (fn [_db l] l)
+                  lobby/send-lobby-state (fn [& _] nil)
+                  lobby/broadcast-lobby-list (fn [& _] nil)]
+      (lobby/try-create-lobby
+       nil "u1" {:username "david"}
+       {:bot-game "vs-bot" :side "Corp" :difficulty "random"
+        :format "system-gateway" :title "t" :room "casual"})
+      (is (nil? @started) "vs-bot startet über den normalen Start-Button"))))

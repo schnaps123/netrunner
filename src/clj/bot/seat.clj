@@ -116,8 +116,15 @@
                 (timbre/error e (str "Bot-Re-Check-Fehler in " gameid)))))))))
   nil)
 
+(defn start-bot-vs-bot!
+  "Startet eine frisch erzeugte bot-vs-bot-Lobby (kein menschlicher
+  first-player vorhanden). start-game! ruft am Ende notify-bots!."
+  [db gameid]
+  (game/start-game! db gameid))
+
 (defn register!
   "Beim Systemstart aufrufen (web.system, ig/init-key :bot/seat)."
   []
   (reset! game/bot-notify-fn notify!)
+  (reset! lobby/bot-start-fn start-bot-vs-bot!)
   :registered)
