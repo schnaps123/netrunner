@@ -40,4 +40,5 @@
                     :mongo #ig/ref :mongodb/connection}
  :sente/router nil
  :game/quotes nil
+ :bot/seat nil
  :jinteki/cards {:mongo #ig/ref :mongodb/connection}}

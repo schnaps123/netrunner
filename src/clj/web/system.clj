@@ -1,6 +1,7 @@
 (ns web.system
   (:require
    [aero.core :as aero]
+   [bot.seat]
    [cljc.java-time.local-date :as ld]
    [clojure.java.io :as io]
    [game.cards.agendas]
@@ -127,6 +128,9 @@
 
 (defmethod ig/init-key :game/quotes [_ _opts]
   (load-quotes!))
+
+(defmethod ig/init-key :bot/seat [_ _opts]
+  (bot.seat/register!))
 
 (defmethod ig/init-key :web/i18n [_ _opts]
   (i18n/load-dictionary! "public/i18n"))
