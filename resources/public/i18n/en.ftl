@@ -942,6 +942,14 @@ lobby_as-corp = As Corp
 
 lobby_as-runner = As Runner
 
+lobby_bot-deck = Bot deck
+
+lobby_bot-difficulty = Bot difficulty
+
+lobby_bot-difficulty-random = Random
+
+lobby_bot-vs-bot = Bot vs. bot
+
 lobby_both-perspective = Both
 
 lobby_cancel = Cancel
@@ -981,6 +989,8 @@ lobby_game-count-filtered = {$cnt ->
     [one] {$cnt} Game (filtered)
     *[other] {$cnt} Games (filtered)
 }
+
+lobby_game-type = Game type
 
 lobby_gateway-format = {$format ->
     [Beginner] Beginner
@@ -1131,6 +1141,10 @@ lobby_type = {$type ->
     [watch] Watch
     *[unknown] Unknown lobby type ({$type})
 }
+
+lobby_vs-bot = Versus bot
+
+lobby_vs-player = Versus player
 
 lobby_waiting = Waiting players deck selection
 

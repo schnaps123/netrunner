@@ -12,7 +12,9 @@
 (def new-game-keys
   [:allow-spectator
    :api-access
+   :bot-game
    :description
+   :difficulty
    :format
    :password
    :room
@@ -64,11 +66,44 @@
      :placeholder (tr [:lobby_title "Title"])
      :maxLength "100"}]])
 
-(defn side-section [side-state]
+(defn game-type-section [state]
+  [:section
+   [tr-element :h3 [:lobby_game-type "Game type"]]
+   (doall
+     (for [[value tr-key label] [[nil :lobby_vs-player "Versus player"]
+                                 ["vs-bot" :lobby_vs-bot "Versus bot"]
+                                 ["bot-vs-bot" :lobby_bot-vs-bot "Bot vs. bot"]]]
+       ^{:key (or value "human")}
+       [:p
+        [:label
+         [:input
+          {:type "radio"
+           :name "bot-game"
+           :checked (= (:bot-game @state) value)
+           :on-change #(do (swap! state assoc :bot-game value)
+                           (when value
+                             ;; Bot-Decks sind System-Gateway-Starterdecks
+                             (swap! state assoc :format "system-gateway")
+                             (when (= "Any Side" (:side @state))
+                               (swap! state assoc :side "Corp"))))}]
+         (tr [tr-key label])]]))
+   (when (:bot-game @state)
+     [:div
+      [:p
+       [:label (tr [:lobby_bot-deck "Bot deck"]) " "
+        [:select {:value "gateway" :disabled true}
+         [:option {:value "gateway"} "System Gateway Starter"]]]]
+      [:p
+       [:label (tr [:lobby_bot-difficulty "Bot difficulty"]) " "
+        [:select {:value (or (:difficulty @state) "random")
+                  :on-change #(swap! state assoc :difficulty (.. % -target -value))}
+         [:option {:value "random"} (tr [:lobby_bot-difficulty-random "Random"])]]]]])])
+
+(defn side-section [side-state sides]
   [:section
    [tr-element :h3 [:lobby_side "Side"]]
    (doall
-     (for [option ["Any Side" "Corp" "Runner"]]
+     (for [option sides]
        ^{:key option}
        [:p
         [:label [:input
@@ -265,6 +300,8 @@
                               :format (or (get-in @app-state [:options :default-format]) "standard")
                               :room (:room @lobby-state)
                               :side "Any Side"
+                              :bot-game nil
+                              :difficulty "random"
                               :gateway-type "Beginner"
                               :precon "worlds-2012-a"
                               :description (when casual?
@@ -284,6 +321,7 @@
                                 :timer nil})
                title (r/cursor state [:title])
                side (r/cursor state [:side])
+               bot-game (r/cursor state [:bot-game])
                precon (r/cursor state [:precon])
                gateway-type (r/cursor state [:gateway-type])
                fmt (r/cursor state [:format])
@@ -301,7 +339,11 @@
            (tr [:lobby_creation-paused "Game creation is currently paused for maintenance."])]])
        [:div.content
         [title-section title]
-        [side-section side]
+        [game-type-section state]
+        (when-not (= "bot-vs-bot" (:bot-game @state))
+          [side-section side (if (= "vs-bot" (:bot-game @state))
+                               ["Corp" "Runner"]
+                               ["Any Side" "Corp" "Runner"])])
         [format-section fmt options gateway-type precon]
         [description-section description]
         [options-section options user]]])))
