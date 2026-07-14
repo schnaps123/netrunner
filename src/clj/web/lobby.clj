@@ -13,6 +13,7 @@
     [jinteki.utils :refer [constructed-game? select-non-nil-keys side-from-str superuser? to?]]
     [jinteki.preconstructed :refer [all-matchups]]
     [jinteki.validator :as validator]
+    [bot.roster :as roster]
     [medley.core :refer [find-first]]
     [monger.collection :as mc]
     [time-literals.read-write :as read-write]
@@ -104,44 +105,81 @@
                    (contains? all-matchups precon)))
       precon)))
 
+(defn- opposite-side [side]
+  (if (= side "Corp") "Runner" "Corp"))
+
+(defn- apply-bot-setup
+  "Erweitert eine frisch erzeugte Lobby um Bot-Player. vs-bot: Bot auf der
+  Gegenseite des Erstellers (Any Side ⇒ Corp). bot-vs-bot: beide Seiten Bots,
+  Ersteller wird Spectator, allow-spectator erzwungen."
+  [lobby bot-game difficulty uid user side]
+  (case bot-game
+    "vs-bot"
+    (let [human-side (if (= side "Runner") "Runner" "Corp")
+          bot-side (opposite-side human-side)
+          human (assoc (first (:players lobby)) :side human-side)]
+      (assoc lobby
+             :players [human (roster/bot-player bot-side difficulty)]
+             :bots {(side-from-str bot-side) (roster/make-bot difficulty)}
+             :bot-thinking? (atom false)))
+    "bot-vs-bot"
+    (assoc lobby
+           :players [(roster/bot-player "Corp" difficulty)
+                     (roster/bot-player "Runner" difficulty)]
+           :spectators [{:uid uid :user user}]
+           :allow-spectator true
+           :bots {:corp (roster/make-bot difficulty)
+                  :runner (roster/make-bot difficulty)}
+           :bot-thinking? (atom false))))
+
 (defn create-new-lobby
   [{uid :uid
     user :user
     {:keys [gameid now
             allow-spectator api-access format mute-spectators password room save-replay
             precon gateway-type side singleton spectatorhands timer title open-decklists description
-            replay-id replay-timestamp]
+            replay-id replay-timestamp bot-game difficulty]
      :or {gameid (random-uuid)
           now (inst/now)}} :options}]
   (let [player {:user user
                 :uid uid
-                :side side}]
-    {:gameid gameid
-     :date now
-     :last-update now
-     :players [player]
-     :spectators []
-     :corp-spectators []
-     :runner-spectators []
-     :messages []
-     :pool (join-pool! gameid)
-     ;; options
-     :precon (validate-precon format precon gateway-type)
-     :open-decklists (or open-decklists (when (validate-precon format precon gateway-type) true))
-     :allow-spectator allow-spectator
-     :api-access api-access
-     :format format
-     :description description
-     :mute-spectators mute-spectators
-     :password (when (not-empty password) (bcrypt/encrypt password))
-     :room room
-     :save-replay save-replay
-     :spectatorhands spectatorhands
-     :replay-id replay-id
-     :replay-timestamp replay-timestamp
-     :singleton (when (some #{format} `("standard" "startup" "casual" "eternal")) singleton)
-     :timer timer
-     :title title}))
+                :side side}
+        base
+        {:gameid gameid
+         :date now
+         :last-update now
+         :players [player]
+         :spectators []
+         :corp-spectators []
+         :runner-spectators []
+         :messages []
+         :pool (join-pool! gameid)
+         ;; options
+         :precon (validate-precon format precon gateway-type)
+         :open-decklists (or open-decklists (when (validate-precon format precon gateway-type) true))
+         :allow-spectator allow-spectator
+         :api-access api-access
+         :format format
+         :description description
+         :mute-spectators mute-spectators
+         :password (when (not-empty password) (bcrypt/encrypt password))
+         :room room
+         :save-replay save-replay
+         :spectatorhands spectatorhands
+         :replay-id replay-id
+         :replay-timestamp replay-timestamp
+         :singleton (when (some #{format} `("standard" "startup" "casual" "eternal")) singleton)
+         :timer timer
+         :title title}]
+    (let [difficulty (or difficulty "random")
+          bot-game (when (and (contains? #{"vs-bot" "bot-vs-bot"} bot-game)
+                              (roster/difficulty? difficulty))
+                     bot-game)]
+      (if bot-game
+        (-> base
+            (assoc :bot-game bot-game :difficulty difficulty)
+            (apply-bot-setup bot-game difficulty uid user side))
+        base))))
 
 (defn get-players-and-spectators [lobby]
   (concat (:players lobby) (:spectators lobby)))
@@ -204,6 +242,8 @@
   [:allow-spectator
    :api-access
    :date
+   :bot-game
+   :difficulty
    :format
    :gameid
    :precon
