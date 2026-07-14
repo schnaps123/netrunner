@@ -34,9 +34,12 @@
 
 (defn- bot-to-act
   "[side kind bot] wenn eine Bot-Seite handeln muss, sonst nil.
-  Prüft zuerst offene Prompts der Bot-Seiten direkt: beim Spielstart haben
-  BEIDE Seiten den Keep/Mulligan-Prompt, und next-actor würde den Prompt des
-  Menschen priorisieren — der Bot soll seinen trotzdem sofort beantworten."
+  Prüft zuerst offene Prompts der Bot-Seiten direkt: next-actor priorisiert
+  immer :corp vor :runner (siehe next-actor unten). Bei Psi-Games
+  (game.core.psi/psi-game) bekommen aber BEIDE Seiten gleichzeitig einen
+  echten :psi-Prompt (kein :waiting/:run) — ohne diesen direkten Check
+  müsste ein Runner-Bot warten, bis next-actor irgendwann zu ihm kommt,
+  obwohl sein eigener Prompt längst beantwortbar ist."
   [{:keys [state bots]}]
   (when (and state (not (:winner @state)))
     (or (some (fn [side]
@@ -106,8 +109,11 @@
             (reset! bot-thinking? false)
             ;; Race: Mensch hat gehandelt, während der Guard noch true war —
             ;; dessen notify! lief ins Leere. Einmal nachprüfen.
-            (when (some-> (bot-lobby gameid) bot-to-act)
-              (notify! gameid)))))))
+            (try
+              (when (some-> (bot-lobby gameid) bot-to-act)
+                (notify! gameid))
+              (catch Exception e
+                (timbre/error e (str "Bot-Re-Check-Fehler in " gameid)))))))))
   nil)
 
 (defn register!

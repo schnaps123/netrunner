@@ -2,6 +2,7 @@
   (:require
    [bot.cards :as bot-cards]
    [bot.game-runner :as runner]
+   [bot.random :as bot-random]
    [bot.seat :as seat]
    [clojure.edn]
    [clojure.java.io]
@@ -108,3 +109,29 @@
           (is (wait-until #(:winner @state) 10000)
               "Bot concedet nach Fehler — Partie endet")
           (is (= "Concede" (:reason @state))))))))
+
+(deftest bot-to-act-bevorzugt-eigenen-parallelen-prompt
+  ;; Psi-Games (game.core.psi/psi-game) zeigen BEIDEN Seiten gleichzeitig
+  ;; einen echten :psi-Prompt. next-actor priorisiert dabei immer :corp vor
+  ;; :runner — bot-to-act soll dem Runner-Bot trotzdem seinen eigenen Prompt
+  ;; sofort beantworten lassen, statt auf next-actor zu warten.
+  (let [bot (bot-random/random-bot 1)
+        state (atom {:corp {:prompt (list {:prompt-type :psi :msg "bid" :eid 1})}
+                     :runner {:prompt (list {:prompt-type :psi :msg "bid" :eid 2})}})
+        lby {:state state :bots {:runner bot}}]
+    (is (= [:corp :prompt] (runner/next-actor state))
+        "next-actor würde hier Corp priorisieren")
+    (is (= [:runner :prompt bot] (#'seat/bot-to-act lby))
+        "bot-to-act beantwortet trotzdem sofort den eigenen Runner-Prompt")))
+
+(deftest bot-to-act-wartet-wenn-nur-gegenseite-einen-prompt-hat
+  ;; Hat NUR Corp einen actionable Prompt und sitzt der Bot auf Runner, muss
+  ;; der Bot warten (kein Bot auf der Seite, die next-actor priorisieren würde).
+  (let [bot (bot-random/random-bot 1)
+        state (atom {:corp {:prompt (list {:prompt-type :psi :msg "bid" :eid 1})}
+                     :runner {:prompt (list)}})
+        lby {:state state :bots {:runner bot}}]
+    (is (= [:corp :prompt] (runner/next-actor state))
+        "next-actor würde Corp wählen")
+    (is (nil? (#'seat/bot-to-act lby))
+        "bot-to-act liefert nil — der Runner-Bot wartet")))
