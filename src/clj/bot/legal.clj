@@ -125,25 +125,40 @@
       (when (and pos (pos? pos) (<= pos (count ices)))
         (nth ices (dec pos))))))
 
+(defn- pending-sub?
+  "Sub, die beim Feuern noch wirken würde: nicht gebrochen, nicht bereits
+  gefeuert, nicht per :resolve false vom Resolven ausgenommen (gleiche
+  Filterlogik wie game.core.ice/resolve-unbroken-subs)."
+  [sub]
+  (and (not (:broken sub))
+       (not (:fired sub))
+       (not (false? (:resolve sub)))))
+
 (defn run-actions
   [view side]
   (let [run (:run view)
         encounter (:encounters view)
-        current-ice (or (:ice encounter) (approached-ice view))]
+        current-ice (or (:ice encounter) (approached-ice view))
+        ;; Zugzwang: Hat der Runner sein Encounter-Fenster abgegeben
+        ;; (:no-action = Seite, die gepasst hat) und es gibt pending Subs,
+        ;; MUSS die Corp feuern — continue daneben anzubieten hieße, ein
+        ;; Zufalls-Bot ließe das Ice per Münzwurf wirkungslos passieren
+        ;; (Smoke-Test-Fund 3). Vor dem Runner-Pass wird Feuern gar nicht
+        ;; angeboten, sonst raubt die Corp dem Runner das Paid-Ability-
+        ;; Fenster zum Brechen (Smoke-Test-Fund 2).
+        must-fire? (and (= side :corp)
+                        encounter (:rezzed current-ice)
+                        (= :runner (:no-action encounter))
+                        (some pending-sub? (:subroutines current-ice)))]
     (vec
      (if (= side :corp)
-       (concat
-        [(action "continue" nil "no action (continue)")]
-        (when (and current-ice (not (:rezzed current-ice)))
-          [(action "rez" {:card current-ice} "rez current ice")])
-        ;; Subs feuern erst, wenn der Runner sein Encounter-Fenster abgegeben
-        ;; hat (:no-action = Seite, die gepasst hat) — sonst raubt die Corp
-        ;; dem Runner das Paid-Ability-Fenster zum Brechen.
-        (when (and encounter (:rezzed current-ice)
-                   (= :runner (:no-action encounter))
-                   (some #(not (:broken %)) (:subroutines current-ice)))
-          [(action "unbroken-subroutines" {:card current-ice}
-                   "fire unbroken subroutines")]))
+       (if must-fire?
+         [(action "unbroken-subroutines" {:card current-ice}
+                  "fire unbroken subroutines")]
+         (concat
+          [(action "continue" nil "no action (continue)")]
+          (when (and current-ice (not (:rezzed current-ice)))
+            [(action "rez" {:card current-ice} "rez current ice")])))
        (concat
         [(action "continue" nil "continue run")]
         (when encounter (ability-actions view :runner))
