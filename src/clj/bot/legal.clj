@@ -136,7 +136,11 @@
         [(action "continue" nil "no action (continue)")]
         (when (and current-ice (not (:rezzed current-ice)))
           [(action "rez" {:card current-ice} "rez current ice")])
+        ;; Subs feuern erst, wenn der Runner sein Encounter-Fenster abgegeben
+        ;; hat (:no-action = Seite, die gepasst hat) — sonst raubt die Corp
+        ;; dem Runner das Paid-Ability-Fenster zum Brechen.
         (when (and encounter (:rezzed current-ice)
+                   (= :runner (:no-action encounter))
                    (some #(not (:broken %)) (:subroutines current-ice)))
           [(action "unbroken-subroutines" {:card current-ice}
                    "fire unbroken subroutines")]))

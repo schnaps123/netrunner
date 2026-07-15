@@ -30,11 +30,16 @@
 
       (or (seq (:encounters s)) (:run s))
       ;; :no-action speichert die SEITE, die bereits gepasst hat
-      ;; (game.core.runs/continue), kein Boolean — handeln muss die andere.
-      ;; false/nil: noch niemand hat gepasst, Corp zuerst.
-      (let [no-action (or (:no-action (peek (:encounters s)))
-                          (:no-action (:run s)))]
-        (if (= :corp no-action) [:runner :run] [:corp :run]))
+      ;; (game.core.runs/continue), kein Boolean. Der Runner ist im Run der
+      ;; aktive Spieler und hat in jedem Timing-Fenster (Initiation, Approach,
+      ;; Encounter, Movement) Priority — die Corp handelt (rez, fire subs,
+      ;; continue) erst, nachdem ER gepasst hat. Läuft ein Encounter, zählt
+      ;; ausschließlich dessen :no-action (Forced Encounters à la Konjin
+      ;; starten mitten in einer Phase mit evtl. altem Run-:no-action).
+      (let [no-action (if (seq (:encounters s))
+                        (:no-action (peek (:encounters s)))
+                        (:no-action (:run s)))]
+        (if (= :runner no-action) [:corp :run] [:runner :run]))
 
       (:corp-phase-12 s) [:corp :phase-12]
       (:runner-phase-12 s) [:runner :phase-12]

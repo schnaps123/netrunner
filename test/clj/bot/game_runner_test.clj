@@ -2,12 +2,15 @@
   (:require
    [bot.cards :as cards]
    [bot.game-runner :as gr]
+   [bot.legal :as legal]
    [bot.random :as random]
+   [bot.view :as view]
    [clojure.edn :as edn]
    [clojure.java.io :as io]
    [clojure.string :as str]
    [clojure.test :refer :all]
    [game.core :as core]
+   [game.core.card :refer [rezzed?]]
    [game.core.set-up :as setup]
    [game.test-framework :refer :all]))
 
@@ -43,13 +46,13 @@
     (click-prompt state :runner "R&D")
     (is (:run @state) "Ability-Run läuft")
     (is (= :initiation (get-in @state [:run :phase])))
-    (is (= [:corp :run] (gr/next-actor state))
-        "Initiation: niemand hat gepasst — Corp zuerst")
-    ;; Corp (Bot) passt zuerst — "has no further action"
-    (core/process-action "continue" state :corp nil)
     (is (= [:runner :run] (gr/next-actor state))
-        "Corp hat gepasst — Runner ist dran")
+        "Initiation: niemand hat gepasst — Runner hat Priority, Bot wartet")
+    ;; Der MENSCH (Runner) passt zuerst, dann handelt die Corp (Bot)
     (core/process-action "continue" state :runner nil)
+    (is (= [:corp :run] (gr/next-actor state))
+        "Runner hat gepasst — jetzt handelt die Corp")
+    (core/process-action "continue" state :corp nil)
     (is (= :movement (get-in @state [:run :phase])) "R&D ohne Ice: direkt Movement")
     ;; Movement: der MENSCH continued zuerst — "will continue the run"
     (core/process-action "continue" state :runner nil)
@@ -62,6 +65,73 @@
     (is (= :success (get-in @state [:run :phase])))
     (click-prompt state :runner "No action")
     (is (nil? (:run @state)) "Run sauber beendet")))
+
+(defn- corp-run-commands [state]
+  (->> (legal/run-actions (view/view-for state :corp) :corp)
+       (map :command)
+       set))
+
+(deftest next-actor-encounter-runner-fenster-vor-corp
+  ;; Smoke-Test-Bug 2 (vs-Bot, Mensch = Runner): Bot rezzt Diviner und feuert
+  ;; die Subroutinen im selben Moment — der Mensch bekommt kein Paid-Ability-
+  ;; Fenster zum Brechen. Regel: Der Runner ist im Run aktiver Spieler und hat
+  ;; in jedem Timing-Fenster Priority; die Corp handelt erst, nachdem ER
+  ;; gepasst hat. Hier mit Whitespace/Mayfly (deterministisch, gleiche Struktur).
+  (do-game
+    (new-game {:corp {:hand ["Whitespace"] :credits 10}
+               :runner {:hand ["Mayfly"] :credits 10}})
+    (play-from-hand state :corp "Whitespace" "HQ")
+    (take-credits state :corp)
+    (play-from-hand state :runner "Mayfly")
+    (run-on state "HQ")
+    (is (= :approach-ice (get-in @state [:run :phase])))
+    (is (= [:runner :run] (gr/next-actor state))
+        "Approach: Runner hat Priority, Bot wartet")
+    (core/process-action "continue" state :runner nil)
+    (is (= [:corp :run] (gr/next-actor state))
+        "Runner hat gepasst — Corp darf rezzen")
+    (core/process-action "rez" state :corp {:card (get-ice state :hq 0)})
+    (is (rezzed? (get-ice state :hq 0)) "Whitespace gerezzt")
+    (core/process-action "continue" state :corp nil)
+    (is (= :encounter-ice (get-in @state [:run :phase])))
+    ;; Encounter: Runner-Fenster ZUERST
+    (is (= [:runner :run] (gr/next-actor state))
+        "Encounter: Runner bricht zuerst, die Corp wartet")
+    (is (not (contains? (corp-run-commands state) "unbroken-subroutines"))
+        "fire unbroken subroutines wird nicht angeboten, solange der Runner nicht gepasst hat")
+    ;; Runner nutzt sein Fenster: Mayfly bricht beide Subs
+    (auto-pump-and-break state (get-program state 0))
+    (is (every? :broken (:subroutines (get-ice state :hq 0)))
+        "Runner konnte im Fenster brechen")
+    (core/process-action "continue" state :runner nil)
+    (is (= [:corp :run] (gr/next-actor state))
+        "Runner hat gepasst — Corp schließt den Encounter ab")
+    (core/process-action "continue" state :corp nil)
+    (is (= :movement (get-in @state [:run :phase])) "Encounter beendet")
+    (is (= 7 (get-in @state [:runner :credit]))
+        "nur Mayfly-Install (1) + 2x Break (2) bezahlt — keine Subs gefeuert")))
+
+(deftest corp-bot-feuert-subs-erst-nach-runner-pass
+  ;; Gegenprobe: bricht der Runner nicht und passt, DARF die Corp danach
+  ;; die ungebrochenen Subs feuern (encounter-ends feuert nicht automatisch).
+  (do-game
+    (new-game {:corp {:hand ["Whitespace"] :credits 10}
+               :runner {:credits 5}})
+    (play-from-hand state :corp "Whitespace" "HQ")
+    (take-credits state :corp)
+    (run-on state "HQ")
+    (core/process-action "continue" state :runner nil)
+    (core/process-action "rez" state :corp {:card (get-ice state :hq 0)})
+    (core/process-action "continue" state :corp nil)
+    (is (= :encounter-ice (get-in @state [:run :phase])))
+    ;; Runner passt, ohne zu brechen
+    (core/process-action "continue" state :runner nil)
+    (is (= [:corp :run] (gr/next-actor state)))
+    (is (contains? (corp-run-commands state) "unbroken-subroutines")
+        "nach Runner-Pass wird fire unbroken subroutines angeboten")
+    (core/process-action "unbroken-subroutines" state :corp {:card (get-ice state :hq 0)})
+    (is (= 2 (get-in @state [:runner :credit])) "Sub 1: Runner verliert 3 Credits")
+    (is (nil? (:run @state)) "Sub 2: End the run (Runner unter 7 Credits)")))
 
 (deftest random-vs-random-komplette-partie
   (let [log-file (io/file (System/getProperty "java.io.tmpdir")
