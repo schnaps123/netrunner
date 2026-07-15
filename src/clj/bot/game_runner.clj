@@ -29,9 +29,12 @@
       (actionable-prompt? state :runner) [:runner :prompt]
 
       (or (seq (:encounters s)) (:run s))
+      ;; :no-action speichert die SEITE, die bereits gepasst hat
+      ;; (game.core.runs/continue), kein Boolean — handeln muss die andere.
+      ;; false/nil: noch niemand hat gepasst, Corp zuerst.
       (let [no-action (or (:no-action (peek (:encounters s)))
                           (:no-action (:run s)))]
-        (if no-action [:runner :run] [:corp :run]))
+        (if (= :corp no-action) [:runner :run] [:corp :run]))
 
       (:corp-phase-12 s) [:corp :phase-12]
       (:runner-phase-12 s) [:runner :phase-12]
