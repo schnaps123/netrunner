@@ -1,6 +1,7 @@
 (ns bot.eval-test
   (:require
    [bot.eval :as beval]
+   [bot.view :as bview]
    [clojure.test :refer :all]
    [game.core :as core]
    [game.test-framework :refer :all]))
@@ -218,3 +219,19 @@
         (is (= 2 ohne-breaker) "raw-ice-cost(Staerke 1, Breaker 0) = max(1, 1-0+1) = 2")
         (is (= 1 mit-musaazi)
             "Typ-Match (Sentry) senkt weiterhin die Staerke-Delta-Schaetzung auf max(1, 1-1+1)=1, kein Crash trotz Virus-Kosten")))))
+
+(deftest evaluate-view-liefert-dasselbe-wie-evaluate
+  (do-game
+    (new-game {:corp {:hand ["Ice Wall"]}})
+    (play-from-hand state :corp "Ice Wall" "HQ")
+    (rez state :corp (get-ice state :hq 0))
+    (is (= (beval/evaluate state :corp)
+           (beval/evaluate-view (bview/view-for state :corp) :corp))
+        "evaluate ist nur noch ein duenner Wrapper um evaluate-view")))
+
+(deftest servers-threat-ist-oeffentlich-und-view-basiert
+  (do-game
+    (new-game {:corp {:hand ["Ice Wall"]}})
+    (play-from-hand state :corp "Ice Wall" "HQ")
+    (rez state :corp (get-ice state :hq 0))
+    (is (contains? (beval/servers-threat (bview/view-for state :corp)) :hq))))

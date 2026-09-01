@@ -207,10 +207,13 @@
      :estimated-cost estimated-cost
      :runner-can-afford? (<= estimated-cost runner-credit)}))
 
-(defn- servers-threat
+(defn servers-threat
   "Pro Corp-Server eine Bedrohungsschätzung: kommt der Runner vermutlich
   durch, und was kostet es ihn? Nutzt nur öffentlich sichtbare Felder der
-  View (Credits beider Seiten, installierte Icebreaker, Ice-Status)."
+  View (Credits beider Seiten, installierte Icebreaker, Ice-Status).
+  Öffentlich: Bot-Konsumenten wie bot.heuristic-corp bekommen nur eine View,
+  nie rohen @state (Projektregel Informations-Hygiene) — sie greifen direkt
+  hierauf zu, statt evaluate/2 zu nutzen, das intern state anfordert."
   [v]
   (let [corp-credit (get-in v [:corp :credit] 0)
         runner-view (get v :runner)
@@ -221,15 +224,12 @@
                  [server-kw (server-threat server-view corp-credit runner-credit runner-view best-breaker)]))
           (get-in v [:corp :servers]))))
 
-(defn evaluate
-  "Bewertet `state` aus Sicht von `side` (:corp oder :runner), ausschließlich
-  über die zensierte View (bot.view/view-for). Liefert eine Map mit
-  Einzeldimensionen und einem gewichteten Gesamtscore (:score), positiv = gut
-  für `side`. Symmetrisch: (evaluate state :corp) und (evaluate state
-  :runner) summieren sich in ihrem :score zu 0."
-  [state side]
-  (let [v (view/view-for state side)
-        opp (opponent side)
+(defn evaluate-view
+  "Wie `evaluate`, nimmt aber eine bereits berechnete View statt `state` —
+  der Einstiegspunkt für Bot-Konsumenten, die nur eine View besitzen (siehe
+  servers-threat-Docstring)."
+  [v side]
+  (let [opp (opponent side)
         own (get v side)
         their (get v opp)
         credit-diff (- (:credit own 0) (:credit their 0))
@@ -251,3 +251,11 @@
      :servers servers
      :threat-level threat-level
      :score score}))
+
+(defn evaluate
+  "Bewertet `state` aus Sicht von `side` (:corp oder :runner) — dünner
+  Wrapper um evaluate-view (siehe dort), berechnet nur die View. Symmetrisch:
+  (evaluate state :corp) und (evaluate state :runner) summieren sich in
+  ihrem :score zu 0."
+  [state side]
+  (evaluate-view (view/view-for state side) side))
