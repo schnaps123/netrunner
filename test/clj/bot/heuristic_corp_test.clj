@@ -80,7 +80,12 @@
 (deftest regel-1-zentralserver-icen-prioritaet-hq
   (do-game
     (new-game {:corp {:hand ["Ice Wall"] :credits 10}})
-    (let [bot (hc/heuristic-corp-bot 1)]
+    (let [bot (hc/heuristic-corp-bot 1)
+          v (view/view-for state :corp)
+          actions (legal/turn-actions v :corp)
+          decision (bp/decide bot v actions)]
+      (is (str/includes? (:reason decision) "Regel 1")
+          "Regel 1 (Zentralserver icen) muss im Decision-Log korrekt benannt sein")
       (game-runner/decide-one! {:state state :side :corp :kind :action :bot bot})
       (game-runner/decide-one! {:state state :side :corp :kind :prompt :bot bot})
       (is (= 1 (count (get-ice state :hq))))
@@ -97,6 +102,11 @@
       (is (= 1 (count (get-ice state :hq))))
       (is (= 1 (count (get-ice state :rd))))
       (is (= 1 (count (get-ice state :archives))))
+      (let [v (view/view-for state :corp)
+            actions (legal/turn-actions v :corp)
+            decision (bp/decide bot v actions)]
+        (is (str/includes? (:reason decision) "Regel 2")
+            "Regel 2 (Scoring-Remote aufbauen) muss im Decision-Log korrekt benannt sein"))
       (game-runner/decide-one! {:state state :side :corp :kind :action :bot bot})
       (game-runner/decide-one! {:state state :side :corp :kind :prompt :bot bot})
       (is (= 1 (count (get-ice state :remote1)))

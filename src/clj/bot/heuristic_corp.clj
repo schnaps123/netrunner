@@ -102,7 +102,7 @@
     (when-let [act (first-play-of-type legal-actions "ICE")]
       {:action act
        :reason (str "heuristic-corp: Regel "
-                    (if (keyword? target) "2 (Scoring-Remote aufbauen)" "1 (Zentralserver icen)")
+                    (if (= target (central-needing-ice view)) "1 (Zentralserver icen)" "2 (Scoring-Remote aufbauen)")
                     " -> " (server-label target) ", installiere " (get-in act [:args :card :title]))})))
 
 ;; --- Prompt-Routing: Server-Wahl ---
