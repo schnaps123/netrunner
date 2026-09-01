@@ -145,3 +145,21 @@
     (is (zero? (+ (:score (beval/evaluate state :corp))
                    (:score (beval/evaluate state :runner))))
         "Threat-Level-Vorzeichen (+Corp/-Runner) bleibt nullsummen-konsistent")))
+
+(deftest breaker-typ-mismatch-senkt-bedrohung-nicht
+  ;; Carmen ist ein Sentry-Breaker (siehe game.cards.programs/"Carmen":
+  ;; (break-sub 1 1 "Sentry")). Gegen Ice Wall (Barrier) darf er die
+  ;; Bedrohungsschaetzung NICHT senken -- ein Bug vor diesem Fix nahm den
+  ;; global staerksten installierten Breaker unabhaengig vom Ice-Typ.
+  (do-game
+    (new-game {:corp {:hand ["Ice Wall"]}
+               :runner {:hand ["Carmen"] :credits 10}})
+    (play-from-hand state :corp "Ice Wall" "HQ")
+    (rez state :corp (get-ice state :hq 0))
+    (let [ohne-breaker (get-in (beval/evaluate state :runner) [:servers :hq :estimated-cost])]
+      (take-credits state :corp)
+      (play-from-hand state :runner "Carmen")
+      (let [mit-falschem-typ (get-in (beval/evaluate state :runner) [:servers :hq :estimated-cost])]
+        (is (= 2 ohne-breaker) "Baseline: raw-ice-cost(Staerke 1, Breaker 0) = max(1, 1-0+1) = 2")
+        (is (= mit-falschem-typ ohne-breaker)
+            "Carmen (Sentry) hilft nicht gegen Ice Wall (Barrier) -- Typ-Match, kein globaler Staerkenwert")))))

@@ -5,7 +5,8 @@
   einen späteren Trainer, deshalb gilt dieselbe Sichtbarkeitsbeschränkung wie
   für echte Bot-Entscheidungen."
   (:require
-   [bot.view :as view]))
+   [bot.view :as view]
+   [game.core.card-defs :refer [card-def]]))
 
 (def ^:private AGENDA-WEIGHT
   "Agenda-Punkte zählen überproportional: nahe an 7 (bzw. weniger bei
@@ -45,10 +46,40 @@
 (defn- icebreaker? [program]
   (some #{"Icebreaker"} (:subtypes program)))
 
+(defn- ice-subtypes
+  "Öffentlich sichtbare Subtypen dieses Ice — leer, wenn unbekannt (siehe
+  ice-known? weiter unten)."
+  [ice]
+  (set (:subtypes ice)))
+
+(defn- matches-ice-type?
+  [breaks ice-subtypes]
+  (or (contains? breaks "All")
+      (boolean (some breaks ice-subtypes))))
+
+(defn- installed-breakers [runner-view]
+  (filter icebreaker? (get-in runner-view [:rig :program])))
+
+(defn- matching-breaker-strength
+  "Stärkster installierter Icebreaker, dessen statisch gelesener Subtyp
+  (card-def — öffentliche, gedruckte Karteninfo, identisch für jede Kopie
+  einer Karte) zu `ice-subtypes` passt. Kein Typ-Match ⇒ 0, selbst wenn ein
+  ANDERER Breaker installiert ist (Fix des v1-Bugs: vorher zählte der
+  global stärkste Breaker unabhängig vom Ice-Typ, siehe
+  bot-eval-v1-backlog)."
+  [runner-view ice-subtypes]
+  (->> (installed-breakers runner-view)
+       (filter (fn [c]
+                 (some #(and (:break %) (matches-ice-type? (:breaks %) ice-subtypes))
+                       (:abilities (card-def c)))))
+       (map #(or (:current-strength %) (:strength %) 0))
+       (apply max 0)))
+
 (defn- best-breaker-strength
   "Stärkster installierter Icebreaker des Runners, 0 falls keiner installiert.
-  v1-Vereinfachung: kein Fracter/Decoder/Killer-Matching gegen den Ice-Typ,
-  nur der global stärkste Brecher (siehe Backlog-Notiz für Schritt 7)."
+  Fallback-Wert für Ice mit unbekanntem Subtyp (unrezztes gegnerisches Ice —
+  dort kann ohnehin nicht typgenau gematcht werden, siehe
+  matching-breaker-strength)."
   [runner-view]
   (->> (get-in runner-view [:rig :program])
        (filter icebreaker?)
@@ -78,18 +109,24 @@
   `ice` sieht. Bereits rezztes Ice ist bezahlt (kein Abschlag); noch nicht
   rezztes Ice ist nur eine potenzielle Bedrohung — kann die Corp die (echten
   oder geschätzten) Rez-Kosten mit ihren aktuell sichtbaren Credits nicht
-  aufbringen, wird die Rohbedrohung mit UNAFFORDABLE-ICE-DISCOUNT abgewertet."
-  [ice corp-credit best-breaker-strength]
+  aufbringen, wird die Rohbedrohung mit UNAFFORDABLE-ICE-DISCOUNT abgewertet.
+  Ist der Ice-Subtyp bekannt, wird der stärkste TYPGLEICHE Breaker verwendet
+  (matching-breaker-strength) statt des global stärksten."
+  [ice corp-credit runner-view best-breaker-strength]
   (let [[strength rez-cost] (ice-strength+cost ice)
-        raw (raw-ice-cost strength best-breaker-strength)]
+        subtypes (ice-subtypes ice)
+        effective-breaker-strength (if (seq subtypes)
+                                      (matching-breaker-strength runner-view subtypes)
+                                      best-breaker-strength)
+        raw (raw-ice-cost strength effective-breaker-strength)]
     (if (or (:rezzed ice) (>= corp-credit (or rez-cost 0)))
       raw
       (* raw UNAFFORDABLE-ICE-DISCOUNT))))
 
 (defn- server-threat
-  [server-view corp-credit runner-credit best-breaker-strength]
+  [server-view corp-credit runner-credit runner-view best-breaker-strength]
   (let [ices (:ices server-view)
-        estimated-cost (reduce + 0 (map #(ice-threat % corp-credit best-breaker-strength) ices))]
+        estimated-cost (reduce + 0 (map #(ice-threat % corp-credit runner-view best-breaker-strength) ices))]
     {:ice-count (count ices)
      :rezzed-count (count (filter :rezzed ices))
      :ice-strength (reduce + 0 (map #(first (ice-strength+cost %)) ices))
@@ -107,7 +144,7 @@
         best-breaker (best-breaker-strength runner-view)]
     (into {}
           (map (fn [[server-kw server-view]]
-                 [server-kw (server-threat server-view corp-credit runner-credit best-breaker)]))
+                 [server-kw (server-threat server-view corp-credit runner-credit runner-view best-breaker)]))
           (get-in v [:corp :servers]))))
 
 (defn evaluate
