@@ -159,3 +159,31 @@ Tests (`test/clj/bot/seat_test.clj`):
 - Bot-Fehler: Retry (No-Op-Streichung), dann concede (User-Entscheidung).
 - Bedenkzeit: 1–2 s auch bei bot-vs-bot (User-Entscheidung).
 - Integrationsansatz: Hook in `web.game` (User-Entscheidung).
+
+## Vollabnahme & Smoke-Test (2026-09-01, vor Merge nach master)
+
+Automatisiert, alles grün:
+- `bin/test` (kaocha): 3810 Tests, 124303 Assertions, 0 Failures.
+- `bin/bot-sim 200`: 200/200 abgeschlossen, 0 hängende Prompts, 0 Step-Cap-Abbrüche,
+  0 Exceptions (Siege Corp 125 / Runner 75).
+- `npm run cljs:build`: 0 Warnings.
+
+Manueller Smoke-Test nach Server-Neustart (aktueller Branch-Stand inkl. Undo- und
+Timing-Fixes), alle Fälle bestanden:
+- Die drei alten Repro-Fälle: Red-Team-Ability-Run, Breaker-Fenster (Pump + Break),
+  Subroutinen feuern.
+- `/undo-click` mehrfach, auch mitten im Encounter.
+- Bot-vs-Bot als Spectator.
+- Multiplayer-Regression mit zwei Menschen inkl. Rez/Encounter.
+- Concede.
+
+Ergebnis: `feat/solo-modus` per Fast-Forward nach lokal `master` gemergt, als Branch
+auf origin gepusht, PR gegen origin/master eröffnet (origin/master hatte eigene
+Upstream-Sync-Historie — kein Force-Push, siehe PR).
+
+### Backlog (aus dem Smoke-Test, nicht blockierend)
+
+- Spiel-Log: bei „trashes due to net damage" fehlt bei verdeckten Karten der
+  Kartenname.
+- Bot-vs-Bot-Spectator: beide Seiten heißen „Bot (Random)" — als Zuschauer schwer
+  zu unterscheiden.
