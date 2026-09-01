@@ -26,3 +26,8 @@
     (is (= "The Catalyst: Convention Breaker" (get-in p [:deck :identity :title])))
     (is (every? #(and (map? (:card %)) (pos? (:qty %))) (get-in p [:deck :cards]))
         "Deck engine-fertig: Karten als server-card-Maps mit :qty")))
+
+(deftest heuristic-difficulty-registriert
+  (is (roster/difficulty? "heuristic"))
+  (is (satisfies? bp/Bot (roster/make-bot "heuristic")))
+  (is (= "Bot (Heuristic)" (roster/bot-username "heuristic"))))
