@@ -76,3 +76,51 @@
           options (legal/prompt-options v :corp)
           decision (bp/on-prompt bot v prompt options)]
       (is (some #{(:option decision)} options)))))
+
+(deftest regel-1-zentralserver-icen-prioritaet-hq
+  (do-game
+    (new-game {:corp {:hand ["Ice Wall"] :credits 10}})
+    (let [bot (hc/heuristic-corp-bot 1)]
+      (game-runner/decide-one! {:state state :side :corp :kind :action :bot bot})
+      (game-runner/decide-one! {:state state :side :corp :kind :prompt :bot bot})
+      (is (= 1 (count (get-ice state :hq))))
+      (is (= "Ice Wall" (:title (get-ice state :hq 0)))))))
+
+(deftest regel-2-scoring-remote-aufbauen-nach-allen-zentralservern
+  (do-game
+    (new-game {:corp {:hand (repeat 4 "Ice Wall") :credits 20}})
+    (core/gain state :corp :click 5)
+    (let [bot (hc/heuristic-corp-bot 1)]
+      (dotimes [_ 3]
+        (game-runner/decide-one! {:state state :side :corp :kind :action :bot bot})
+        (game-runner/decide-one! {:state state :side :corp :kind :prompt :bot bot}))
+      (is (= 1 (count (get-ice state :hq))))
+      (is (= 1 (count (get-ice state :rd))))
+      (is (= 1 (count (get-ice state :archives))))
+      (game-runner/decide-one! {:state state :side :corp :kind :action :bot bot})
+      (game-runner/decide-one! {:state state :side :corp :kind :prompt :bot bot})
+      (is (= 1 (count (get-ice state :remote1)))
+          "vierte Ice-Karte -> neuer Remote, alle Zentralserver schon geict"))))
+
+(deftest regel-2-weiteres-ice-in-unsicheren-scoring-remote
+  ;; Alle Zentralserver muessen VOR dem bot-Aufruf schon geict sein, sonst
+  ;; greift Regel 1 (Zentralserver icen) zuerst und der Test isoliert nicht
+  ;; Regel 2 -- deshalb HQ/R&D/Archives direkt (nicht ueber den Bot)
+  ;; besetzen. Scoring-Remote hat danach 1 (schwaches) Ice, Runner hat viele
+  ;; Credits -> unsicher -> Regel 2 legt WEITERES Ice nach statt eine
+  ;; Agenda zu jammen.
+  (do-game
+    (new-game {:corp {:hand ["Priority Requisition" "Ice Wall" "Ice Wall" "Ice Wall" "Ice Wall" "Ice Wall"]
+                      :credits 20}
+               :runner {:credits 20}})
+    (core/gain state :corp :click 10)
+    (play-from-hand state :corp "Ice Wall" "HQ")
+    (play-from-hand state :corp "Ice Wall" "R&D")
+    (play-from-hand state :corp "Ice Wall" "Archives")
+    (play-from-hand state :corp "Ice Wall" "New remote")
+    (let [bot (hc/heuristic-corp-bot 1)]
+      (game-runner/decide-one! {:state state :side :corp :kind :action :bot bot})
+      (game-runner/decide-one! {:state state :side :corp :kind :prompt :bot bot})
+      (is (= 2 (count (get-ice state :remote1)))
+          "unsicherer Remote (Runner hat 20 Credits) -> zweites Ice statt Agenda-Install")
+      (is (empty? (get-content state :remote1))))))
