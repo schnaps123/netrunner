@@ -2,13 +2,16 @@
   (:require
    [bot.cards :as bot-cards]
    [bot.game-runner :as runner]
+   [bot.legal :as legal]
    [bot.log :as blog]
    [bot.random :as bot-random]
    [bot.seat :as seat]
+   [bot.view :as view]
    [clojure.edn]
    [clojure.java.io]
    [clojure.string]
    [clojure.test :refer :all]
+   [game.main :as main]
    [web.app-state :as app-state]
    [web.game :as game]
    [web.lobby :as lobby]
@@ -189,6 +192,88 @@
     (is (= {:foo 1} (:data @logged)))
     (is (string? (:stacktrace @logged)))
     (is (not (clojure.string/blank? (:stacktrace @logged))))))
+
+(deftest pending-undo-consent-erkennt-offene-anfrage
+  (let [bot (bot-random/random-bot 1)
+        state (atom {:turn-state {} :corp {:undo-turn true} :runner {}})
+        lby {:state state :bots {:runner bot}}]
+    (is (= [:runner bot] (#'seat/pending-undo-consent lby))
+        "Corp (Mensch) hat zugestimmt, Runner-Bot muss noch konsentieren")))
+
+(deftest pending-undo-consent-nil-ohne-bot-auf-der-anderen-seite
+  (let [state (atom {:turn-state {} :corp {:undo-turn true} :runner {}})
+        lby {:state state :bots {:corp (bot-random/random-bot 1)}}]
+    (is (nil? (#'seat/pending-undo-consent lby))
+        "Corp selbst ist der Bot, der schon zugestimmt hat — nichts offen")))
+
+(deftest pending-undo-consent-nil-wenn-schon-konsentiert
+  (let [bot (bot-random/random-bot 1)
+        state (atom {:turn-state {} :corp {:undo-turn true} :runner {:undo-turn true}})
+        lby {:state state :bots {:runner bot}}]
+    (is (nil? (#'seat/pending-undo-consent lby))
+        "beide Seiten haben zugestimmt — Engine hätte längst zurückgesetzt")))
+
+(deftest pending-undo-consent-nil-ohne-anfrage
+  (let [bot (bot-random/random-bot 1)
+        state (atom {:turn-state {} :corp {} :runner {}})
+        lby {:state state :bots {:runner bot}}]
+    (is (nil? (#'seat/pending-undo-consent lby)))))
+
+(deftest vs-bot-bot-stimmt-undo-turn-automatisch-zu
+  ;; Smoke-Test-Notiz: /undo-turn ist konsenspflichtig (game.core.commands/
+  ;; command-undo-turn) — der Bot chattet nie von sich aus, muss also
+  ;; automatisch zustimmen, sonst hängt die Anfrage für immer.
+  (binding [seat/*think-ms* [0 0]]
+    (with-stub-io
+      (let [gameid (start-vs-bot!)
+            {:keys [state] :as lobby} (app-state/get-lobby gameid)]
+        ;; Corp-Bot beantwortet zuerst seinen eigenen Mulligan-Prompt; erst
+        ;; danach entlarvt clear-wait-prompt den echten Runner-Prompt (siehe
+        ;; game.core.set-up/keep-hand) — auf DEN warten, nicht nur darauf,
+        ;; dass Corps Prompt weg ist (sonst race: Runner-Prompt noch :waiting).
+        (is (wait-until #(runner/actionable-prompt? (:state (app-state/get-lobby gameid)) :runner)
+                        10000))
+        ;; Runner (Mensch) "keept" manuell, um den Zug zu starten (:turn-state
+        ;; existiert erst, sobald ein Zug begonnen hat — command-undo-turn ist
+        ;; sonst ein No-Op, siehe game.core.commands/command-undo-turn).
+        ;; Wie im echten :game/action-Handler über lobby/game-thread laufen
+        ;; lassen (und mit @ abwarten) — sonst konkurriert dieser Test-Thread
+        ;; unserialisiert mit dem Bot-Loop-Pool-Thread auf demselben State-Atom
+        ;; (genau die Race, vor der die Serialisierung eigentlich schützt).
+        (let [v (view/view-for state :runner)
+              keep-opt (first (filter #(= "Keep" (:label %))
+                                      (legal/prompt-options v :runner)))]
+          (is (some? keep-opt))
+          @(lobby/game-thread
+            lobby
+            (game/update-and-send-diffs!
+             (fn [s _] (runner/apply-choice! s :runner :prompt keep-opt))
+             lobby :runner)
+            ;; Wie im echten :game/action-Pfad: erst nach dem Hook-Aufruf holt
+            ;; der Bot next-actor -> [:corp :start-turn] ab und startet den Zug.
+            (seat/notify! gameid)))
+        (is (wait-until #(:turn-state @state) 10000) "Zug hat begonnen")
+        ;; Mensch (Runner) schickt /undo-turn — wie im echten :game/say-Pfad.
+        ;; Kein Zwischen-Check auf [:runner :undo-turn]: sobald der Bot
+        ;; zustimmt (Konsens komplett, kein think!-Delay dafür), resettet
+        ;; command-undo-turn den State auf den Snapshot von VOR der Anfrage —
+        ;; die Flag ist dann selbst schon wieder weg. Das Log ist der einzige
+        ;; stabile, nicht-transiente Beleg für die Zustimmung.
+        @(lobby/game-thread
+          lobby
+          (game/update-and-send-diffs!
+           main/handle-say lobby :runner {:username "david"} "/undo-turn")
+          (seat/notify! gameid))
+        (is (wait-until
+             #(some (fn [line]
+                      (= :undo-turn-consent (:event (clojure.edn/read-string line))))
+                    (clojure.string/split-lines
+                     (try (slurp (seat/log-path gameid)) (catch Exception _ ""))))
+             10000)
+            "Bot hat einen :undo-turn-consent-Eintrag geloggt")
+        (is (wait-until #(not (get-in @state [:corp :undo-turn])) 10000)
+            "Konsens abgeschlossen — Engine hat zurückgesetzt (Flag verschwunden)")
+        (is (nil? (:winner @state)) "Partie läuft normal weiter, kein Absturz/Concede")))))
 
 (deftest try-create-lobby-startet-vs-bot-nicht
   (let [started (atom nil)]

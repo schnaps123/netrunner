@@ -15,6 +15,15 @@
                       (reset! game/bot-notify-fn (fn [_] nil))
                       (f)))
 
+(defn- wait-until
+  "Pollt bis pred truthy oder timeout-ms um; liefert (pred) oder nil."
+  [pred timeout-ms]
+  (loop [waited 0]
+    (or (pred)
+        (when (< waited timeout-ms)
+          (Thread/sleep 50)
+          (recur (+ waited 50))))))
+
 (defn- stub-io [f]
   (with-redefs [ws/chsk-send! (fn [& _] nil)
                 stats/game-started (fn [& _] nil)
@@ -53,3 +62,24 @@
 
 (deftest notify-bots!-default-no-op
   (is (nil? (game/notify-bots! "irgendeine-id"))))
+
+(deftest game--say-ruft-bot-hook
+  ;; Bug: /undo-turn (konsenspflichtig) hing für immer, weil :game/say im
+  ;; Gegensatz zu :game/action und :game/rejoin den Bot-Hook nie rief — der
+  ;; Bot bekam nie mit, dass eine Undo-Anfrage auf seine Zustimmung wartet.
+  (let [notified (atom [])]
+    (reset! game/bot-notify-fn (fn [gameid] (swap! notified conj gameid)))
+    (let [gameid (make-started-vs-bot-lobby!)]
+      (reset! notified [])
+      (stub-io
+       #(ws/-msg-handler {:id :game/say
+                          :ring-req {:user {:username "david"}}
+                          :uid "u1"
+                          :?data {:gameid gameid :msg "hello"}
+                          :timestamp 0}))
+      ;; :game/say läuft wie :game/action über lobby/game-thread (asynchron,
+      ;; eigener Pool) — pollen statt sofort zu prüfen, sonst räumt die
+      ;; Assertion vor dem verzögerten Hook-Aufruf ab (und dessen später
+      ;; ankommender Write würde den NÄCHSTEN Test verunreinigen).
+      (is (wait-until #(= [gameid] @notified) 5000)
+          "Bot-Hook wird auch nach :game/say gerufen"))))

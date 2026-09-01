@@ -443,6 +443,10 @@
       (lobby/game-thread
        lobby?
        (handle-message-and-send-diffs! lobby? side user msg)
+       ;; Chat-Kommandos (z.B. /undo-turn) können State ändern, ohne dass
+       ;; :game/action läuft — der Bot muss trotzdem benachrichtigt werden
+       ;; (z.B. um einer konsenspflichtigen Undo-Anfrage zuzustimmen).
+       (notify-bots! gameid)
        (lobby/log-delay! timestamp id)))))
 
 (defmethod ws/-msg-handler :game/typing
