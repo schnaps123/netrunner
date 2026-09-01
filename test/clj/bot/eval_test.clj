@@ -59,3 +59,89 @@
     (is (zero? (+ (:score (beval/evaluate state :corp))
                    (:score (beval/evaluate state :runner))))
         "Bewertung ist symmetrisch: Vorteil der einen Seite = Nachteil der anderen")))
+
+;; --- Server-Bedrohungsschätzung ---
+
+(deftest mehr-ice-hoehere-geschaetzte-kosten
+  (do-game
+    (new-game {:corp {:hand [(qty "Ice Wall" 2)]}})
+    (play-from-hand state :corp "Ice Wall" "HQ")
+    (rez state :corp (get-ice state :hq 0))
+    (let [one (get-in (beval/evaluate state :runner) [:servers :hq :estimated-cost])]
+      (play-from-hand state :corp "Ice Wall" "HQ")
+      (rez state :corp (get-ice state :hq 1))
+      (let [two (get-in (beval/evaluate state :runner) [:servers :hq :estimated-cost])]
+        (is (> two one) "zweites rezztes Ice erhöht die geschätzten Kosten")))))
+
+(deftest unrezztes-ice-nutzt-unknown-default-fuer-runner
+  ;; Ice Wall ist ein schwaches/billiges Ice (Stärke 1). Wenn der Runner
+  ;; (fremde, unrezzte Corp-Ice sind für ihn privat) trotzdem einen HÖHEREN
+  ;; Wert schätzt als die Corp selbst (die die echten, schwachen Werte
+  ;; kennt), beweist das: der generische Unknown-Default wird verwendet,
+  ;; nicht 0 und nicht die echten (durchgesickerten) Werte.
+  (do-game
+    (new-game {:corp {:hand ["Ice Wall"]}})
+    (play-from-hand state :corp "Ice Wall" "HQ")
+    (let [runner-cost (get-in (beval/evaluate state :runner) [:servers :hq :estimated-cost])
+          corp-cost (get-in (beval/evaluate state :corp) [:servers :hq :estimated-cost])]
+      (is (pos? runner-cost) "unrezztes Ice zählt nicht als 0 Bedrohung")
+      (is (> runner-cost corp-cost)
+          "Runner-Schätzung basiert auf dem Unknown-Default, nicht auf dem echten schwachen Ice Wall"))))
+
+(deftest corp-sicht-auf-eigenes-unrezztes-ice-nutzt-echte-werte
+  (do-game
+    (new-game {:corp {:hand [(qty "Ice Wall" 1)]}})
+    (play-from-hand state :corp "Ice Wall" "HQ")
+    (let [unrezzt (get-in (beval/evaluate state :corp) [:servers :hq :estimated-cost])]
+      (rez state :corp (get-ice state :hq 0))
+      (let [rezzt (get-in (beval/evaluate state :corp) [:servers :hq :estimated-cost])]
+        (is (= unrezzt rezzt)
+            "Corp sieht eigenes Ice unrezzt bereits mit den echten Werten — Rezzen ändert die Schätzung nicht")))))
+
+(deftest rez-erschwinglichkeit-senkt-bedrohung-ohne-auf-0-zu-fallen
+  (do-game
+    (new-game {:corp {:hand ["Ice Wall"]}})
+    (play-from-hand state :corp "Ice Wall" "HQ")
+    (swap! state assoc-in [:corp :credit] 0)
+    (let [arm (get-in (beval/evaluate state :corp) [:servers :hq :estimated-cost])]
+      (swap! state assoc-in [:corp :credit] 20)
+      (let [reich (get-in (beval/evaluate state :corp) [:servers :hq :estimated-cost])]
+        (is (pos? arm) "Bluff ohne Rez-Deckung ist nicht wertlos")
+        (is (< arm reich)
+            "Corp kann sich den Rez nicht leisten ⇒ Bedrohung wird abgewertet")))))
+
+(deftest icebreaker-senkt-bedrohungsschaetzung
+  (do-game
+    (new-game {:corp {:hand ["Ice Wall"]}
+               :runner {:hand ["Corroder"] :credits 10}})
+    (play-from-hand state :corp "Ice Wall" "HQ")
+    (rez state :corp (get-ice state :hq 0))
+    (let [ohne-breaker (get-in (beval/evaluate state :runner) [:servers :hq :estimated-cost])]
+      (take-credits state :corp)
+      (play-from-hand state :runner "Corroder")
+      (let [mit-breaker (get-in (beval/evaluate state :runner) [:servers :hq :estimated-cost])]
+        (is (< mit-breaker ohne-breaker)
+            "installierter Icebreaker senkt die geschätzten Durchbruchskosten")))))
+
+(deftest runner-can-afford-kippt-mit-credits
+  (do-game
+    (new-game {:corp {:hand ["Ice Wall"]}})
+    (play-from-hand state :corp "Ice Wall" "HQ")
+    (rez state :corp (get-ice state :hq 0))
+    (swap! state assoc-in [:runner :credit] 0)
+    (let [arm (get-in (beval/evaluate state :runner) [:servers :hq :runner-can-afford?])]
+      (swap! state assoc-in [:runner :credit] 20)
+      (let [reich (get-in (beval/evaluate state :runner) [:servers :hq :runner-can-afford?])]
+        (is (false? arm) "0 Credits reichen nicht für den Durchbruch")
+        (is (true? reich) "20 Credits reichen für den Durchbruch")))))
+
+(deftest score-bleibt-nullsumme-mit-server-bedrohung
+  (do-game
+    (new-game {:corp {:hand ["Ice Wall"]}})
+    (play-from-hand state :corp "Ice Wall" "HQ")
+    (rez state :corp (get-ice state :hq 0))
+    (is (pos? (get-in (beval/evaluate state :corp) [:threat-level]))
+        "Test-Voraussetzung: es gibt überhaupt eine Bedrohung zu verrechnen")
+    (is (zero? (+ (:score (beval/evaluate state :corp))
+                   (:score (beval/evaluate state :runner))))
+        "Threat-Level-Vorzeichen (+Corp/-Runner) bleibt nullsummen-konsistent")))
