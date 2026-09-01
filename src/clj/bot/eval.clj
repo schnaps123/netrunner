@@ -104,21 +104,95 @@
 (defn- raw-ice-cost [strength best-breaker-strength]
   (max 1 (inc (- strength best-breaker-strength))))
 
+(defn- credit-cost
+  "Summe reiner Credit-Kosten aus einem break-sub/strength-pump-Kostenvektor
+  (Vektor von game.core.payment/->c-Maps), oder nil, wenn eine Komponente
+  kein reiner Credit-Betrag ist (X-Cost, Virus-/Power-Counter, Trash, ...) —
+  dann ist die Ability für eine Kosten-Schätzung nicht nutzbar (dokumentierte
+  Vereinfachung, siehe Design-Spec Teil 1, Punkt 6)."
+  [cost]
+  (when (and (seq cost)
+             (every? #(and (= :credit (:cost/type %)) (number? (:cost/amount %))) cost))
+    (reduce + 0 (map :cost/amount cost))))
+
+(defn- min-or-nil [xs]
+  (when (seq xs) (apply min xs)))
+
+(defn- pump-abilities [card]
+  (filter :pump (:abilities (card-def card))))
+
+(defn- break-abilities [card ice-subtypes]
+  (filter #(and (:break %) (matches-ice-type? (:breaks %) ice-subtypes))
+          (:abilities (card-def card))))
+
+(defn- pump-cost-for-ice
+  "Credits, um `card` mindestens `needed` zusätzliche Stärke zu geben — 0,
+  wenn keine Stärke fehlt, nil ohne nutzbare (reine Credit-)Pump-Ability."
+  [card needed]
+  (if (<= needed 0)
+    0
+    (min-or-nil
+     (keep (fn [ab]
+             (let [per-use (:pump ab)
+                   cost (credit-cost (:cost ab))]
+               (when (and cost (number? per-use) (pos? per-use))
+                 (* cost (long (Math/ceil (/ (double needed) per-use)))))))
+           (pump-abilities card)))))
+
+(defn- break-cost-for-ice
+  "Credits, um alle `subs-count` Subroutinen dieses Ice mit `card` zu
+  brechen — 0 ohne Subroutinen, nil ohne passende (reine Credit-)Break-
+  Ability. `:break 0` bedeutet 'beliebig viele Subs in einer Zahlung'."
+  [card ice-subtypes subs-count]
+  (if (zero? subs-count)
+    0
+    (min-or-nil
+     (keep (fn [ab]
+             (let [n (:break ab)
+                   per-use (if (pos? n) n subs-count)
+                   cost (credit-cost (:break-cost ab))]
+               (when cost
+                 (* cost (long (Math/ceil (/ (double subs-count) per-use)))))))
+           (break-abilities card ice-subtypes)))))
+
+(defn- breaker-cost-for-ice
+  [card ice-strength ice-subtypes subs-count]
+  (let [breaker-strength (or (:current-strength card) (:strength card) 0)
+        needed (max 0 (- ice-strength breaker-strength))
+        pump (pump-cost-for-ice card needed)]
+    (when pump
+      (when-let [break (break-cost-for-ice card ice-subtypes subs-count)]
+        (+ pump break)))))
+
+(defn- best-breach-cost
+  "Echte, minimale Credit-Kosten über alle installierten Icebreaker hinweg,
+  dieses Ice vollständig zu durchbrechen — nil, wenn kein installierter
+  Breaker mit reinen Credit-Kosten passt (Fallback: raw-ice-cost, siehe
+  ice-threat)."
+  [runner-view ice-strength ice-subtypes subs-count]
+  (min-or-nil
+   (keep #(breaker-cost-for-ice % ice-strength ice-subtypes subs-count)
+         (installed-breakers runner-view))))
+
 (defn- ice-threat
   "Geschätzte Kosten, dieses eine Ice zu überwinden, aus Sicht der Seite, die
   `ice` sieht. Bereits rezztes Ice ist bezahlt (kein Abschlag); noch nicht
   rezztes Ice ist nur eine potenzielle Bedrohung — kann die Corp die (echten
   oder geschätzten) Rez-Kosten mit ihren aktuell sichtbaren Credits nicht
   aufbringen, wird die Rohbedrohung mit UNAFFORDABLE-ICE-DISCOUNT abgewertet.
-  Ist der Ice-Subtyp bekannt, wird der stärkste TYPGLEICHE Breaker verwendet
-  (matching-breaker-strength) statt des global stärksten."
+  Bekannter Ice-Subtyp: erst echte Credit-Kosten versuchen
+  (best-breach-cost), sonst Stärke-Delta-Fallback mit typgenauem Breaker
+  (matching-breaker-strength)."
   [ice corp-credit runner-view best-breaker-strength]
   (let [[strength rez-cost] (ice-strength+cost ice)
         subtypes (ice-subtypes ice)
+        subs-count (count (:subroutines ice))
         effective-breaker-strength (if (seq subtypes)
                                       (matching-breaker-strength runner-view subtypes)
                                       best-breaker-strength)
-        raw (raw-ice-cost strength effective-breaker-strength)]
+        real (when (seq subtypes)
+               (best-breach-cost runner-view strength subtypes subs-count))
+        raw (or real (raw-ice-cost strength effective-breaker-strength))]
     (if (or (:rezzed ice) (>= corp-credit (or rez-cost 0)))
       raw
       (* raw UNAFFORDABLE-ICE-DISCOUNT))))

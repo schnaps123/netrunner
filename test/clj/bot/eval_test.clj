@@ -163,3 +163,58 @@
         (is (= 2 ohne-breaker) "Baseline: raw-ice-cost(Staerke 1, Breaker 0) = max(1, 1-0+1) = 2")
         (is (= mit-falschem-typ ohne-breaker)
             "Carmen (Sentry) hilft nicht gegen Ice Wall (Barrier) -- Typ-Match, kein globaler Staerkenwert")))))
+
+(deftest echte-break-kosten-corroder-vs-ice-wall
+  ;; Corroder: Staerke 2, Fracter, "1cr: break 1 Barrier-Sub", "1cr: +1
+  ;; Staerke". Ice Wall: Staerke 1, 1 Subroutine. Keine Pump noetig (2>=1),
+  ;; 1 Sub * 1cr = 1.
+  (do-game
+    (new-game {:corp {:hand ["Ice Wall"]}
+               :runner {:hand ["Corroder"] :credits 10}})
+    (play-from-hand state :corp "Ice Wall" "HQ")
+    (rez state :corp (get-ice state :hq 0))
+    (take-credits state :corp)
+    (play-from-hand state :runner "Corroder")
+    (is (= 1 (get-in (beval/evaluate state :runner) [:servers :hq :estimated-cost])))))
+
+(deftest echte-break-kosten-skalieren-mit-subroutine-anzahl
+  ;; Battlement: Staerke 2, Barrier, 2 Subroutinen ("End the run" je zweimal).
+  ;; Corroder (Staerke 2) braucht keine Pump, aber 2 Subs * 1cr = 2.
+  (do-game
+    (new-game {:corp {:hand ["Battlement"] :credits 10}
+               :runner {:hand ["Corroder"] :credits 10}})
+    (play-from-hand state :corp "Battlement" "HQ")
+    (rez state :corp (get-ice state :hq 0))
+    (take-credits state :corp)
+    (play-from-hand state :runner "Corroder")
+    (is (= 2 (get-in (beval/evaluate state :runner) [:servers :hq :estimated-cost])))))
+
+(deftest echte-break-kosten-inkl-pump
+  ;; Bastion: Staerke 4, Barrier, 1 Subroutine. Corroder (Staerke 2) muss
+  ;; erst 2 Staerke pumpen (2 * 1cr = 2cr), dann 1 Sub brechen (1cr) = 3cr.
+  (do-game
+    (new-game {:corp {:hand ["Bastion"] :credits 10}
+               :runner {:hand ["Corroder"] :credits 10}})
+    (play-from-hand state :corp "Bastion" "HQ")
+    (rez state :corp (get-ice state :hq 0))
+    (take-credits state :corp)
+    (play-from-hand state :runner "Corroder")
+    (is (= 3 (get-in (beval/evaluate state :runner) [:servers :hq :estimated-cost])))))
+
+(deftest exotische-break-kosten-fallen-auf-staerke-delta-zurueck
+  ;; Musaazi bricht Sentry-Subs fuer Virus-Counter statt Credits (kein
+  ;; reiner Credit-Preis) -- die Kosten-Schaetzung darf nicht crashen,
+  ;; sondern faellt auf die (typgenaue) Staerke-Delta-Schaetzung aus Task 1
+  ;; zurueck. Tithe: Staerke 1, Sentry, 2 Subs. Musaazi: Staerke 1.
+  (do-game
+    (new-game {:corp {:hand ["Tithe"]}
+               :runner {:hand ["Musaazi"] :credits 10}})
+    (play-from-hand state :corp "Tithe" "HQ")
+    (rez state :corp (get-ice state :hq 0))
+    (let [ohne-breaker (get-in (beval/evaluate state :runner) [:servers :hq :estimated-cost])]
+      (take-credits state :corp)
+      (play-from-hand state :runner "Musaazi")
+      (let [mit-musaazi (get-in (beval/evaluate state :runner) [:servers :hq :estimated-cost])]
+        (is (= 2 ohne-breaker) "raw-ice-cost(Staerke 1, Breaker 0) = max(1, 1-0+1) = 2")
+        (is (= 1 mit-musaazi)
+            "Typ-Match (Sentry) senkt weiterhin die Staerke-Delta-Schaetzung auf max(1, 1-1+1)=1, kein Crash trotz Virus-Kosten")))))
