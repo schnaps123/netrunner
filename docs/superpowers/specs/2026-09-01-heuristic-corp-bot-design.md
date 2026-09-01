@@ -167,17 +167,26 @@ für die reine Zustandsbewertung.
 
 ### Rez-Entscheidung (unabhängig von der Klick-Reihenfolge oben)
 
-Bei jedem `decide`-Aufruf während eines Runs, bei dem die Corp am Zug ist
-und aktuelles Ice unrezzt ist (`bot.legal/run-actions` bietet dann `"rez"`
-als legale Aktion an): rezzen, wenn bezahlbar UND die
-Bedrohungsschätzung (`bot.eval/servers-threat`) für den betroffenen Server
-NACH Rez höher ausfällt als eine Schätzung mit diesem Ice weiterhin als
-unrezzt behandelt (Differenz > 0). In der Praxis: rezztes Ice hat in
-`bot.eval` keinen `UNAFFORDABLE-ICE-DISCOUNT`-Abschlag mehr UND ggf. andere
-echte Werte als der Unknown-Default — der Vergleich ist ein einfacher
-Vorher/Nachher-Aufruf von `bot.eval/evaluate` (bzw. einer neuen, gezielten
-Ein-Ice-Variante, falls der volle `evaluate`-Call zu teuer/indirekt ist —
-Umsetzungsdetail im Plan).
+Korrektur gegenüber dem ursprünglichen Entwurf (gefunden beim Schreiben des
+Implementierungsplans): ein Vorher/Nachher-Vergleich über
+`bot.eval/servers-threat` aus der Sicht der Corp selbst ist degeneriert —
+die Corp kennt die echten Werte ihres eigenen Ice immer, mit oder ohne Rez
+(`ice-known?` ist für die Corp auf eigene Karten immer wahr). Der
+`UNAFFORDABLE-ICE-DISCOUNT`-Abschlag in `bot.eval` gilt nur, wenn Rez-Kosten
+UND Rez-Status unbekannt sind — das betrifft ausschließlich die Sicht des
+RUNNERS auf gegnerisches Ice, nie die Sicht der Corp auf ihr eigenes. Ein
+Vorher/Nachher-`evaluate`-Aufruf aus Corp-Sicht liefert deshalb immer
+`Differenz = 0` und wäre kein sinnvolles Kriterium.
+
+Stattdessen (äquivalent zum eigentlichen Ziel "rez lohnt sich, wenn
+bezahlbar"): Bei jedem `decide`-Aufruf während eines Runs, bei dem die Corp
+am Zug ist und aktuelles Ice unrezzt ist (`bot.legal/run-actions` bietet
+dann `"rez"` als legale Aktion an) → rezzen, wenn `(:cost ice) <=
+corp-credit`. Begründung: unrezztes Ice schützt nichts (Subroutinen feuern
+nur, wenn rezzt), ein bereits laufender Run gegen diesen Server bietet keinen
+Vorteil durch Zurückhalten — das Affordability-Fenster JETZT zu nutzen ist
+nie schlechter als warten (kein Bluffing-Repertoire in v1, siehe
+Nicht-Ziele). Nicht bezahlbar → `"continue"`.
 
 ### `on-prompt`-Verhalten
 
