@@ -14,8 +14,10 @@ Regel-Nachbildung, nur Entscheidungslogik über die vorhandene Engine-API
 (Projektregel).
 
 Messbares Ziel: Heuristik-Corp gegen Random-Runner gewinnt über 200
-Sim-Partien deutlich häufiger als Random-Corp (Baseline aus letztem Lauf:
-Corp 121 / Runner 79 von 200).
+Sim-Partien **≥ 140/200 (70 %)**, klar über der Baseline Random-Corp vs.
+Random-Runner (121/200 = 60,5 %). Schwelle fest in dieser Spec, nicht erst
+im Plan — sonst ist am Ende nicht objektiv entscheidbar, ob das Playbook
+etwas gebracht hat.
 
 Voraussetzung (zuerst umzusetzen, siehe [[bot-eval-v1-backlog]]): `bot.eval`s
 Server-Bedrohungsschätzung nutzt aktuell (a) den global stärksten
@@ -177,6 +179,28 @@ Vorher/Nachher-Aufruf von `bot.eval/evaluate` (bzw. einer neuen, gezielten
 Ein-Ice-Variante, falls der volle `evaluate`-Call zu teuer/indirekt ist —
 Umsetzungsdetail im Plan).
 
+### `on-prompt`-Verhalten
+
+Das Bot-Protokoll (`bot.protocol/Bot`) verlangt neben `decide` auch
+`on-prompt` (Mulligan, Discard-Auswahl, Select-/Trace-/Titel-Prompts etc.).
+Für v1 bekommt NUR der Mulligan-Prompt eine eigene Heuristik — alle anderen
+Prompts delegieren an die bestehende `bot.random`-Logik (uniform zufällige
+Auswahl aus den legalen Optionen). `HeuristicCorpBot` hält dafür intern
+einen eingebetteten `random-bot` (Komposition, kein Re-Implementieren der
+Auswahllogik) und ruft dessen `on-prompt` auf, wenn `(:prompt-type prompt)`
+nicht `:mulligan` ist.
+
+Mulligan-Erkennung: `(= :mulligan (:prompt-type prompt))` (siehe
+`game.core.set-up/keep-hand+mulligan`, Optionen sind Buttons mit `:label`
+`"Keep"`/`"Mulligan"`). Heuristik: Hand enthält weder eine Ice-Karte
+(`:type "ICE"`) noch eine Econ-Karte aus einer festen, gateway-corp-
+spezifischen Liste (`MULLIGAN-ECON-CARDS` = `#{"Hedge Fund"
+"Government Subsidy" "Nico Campaign" "Regolith Mining License"}` — alle
+vier sind Teil des fixen Starterdecks, siehe `bot.cards/gateway-corp`,
+YAGNI wie bei der Seamless-Launch-Erkennung) → `"Mulligan"` wählen; sonst
+`"Keep"`. `:reason` benennt die gezählten Ice-/Econ-Karten in der
+Starthand.
+
 ### Decision-Log (Projektregel)
 
 Jede `decide`/`on-prompt`-Rückgabe trägt `:reason` mit: welche Playbook-Regel
@@ -197,12 +221,11 @@ sicher, installiere Priority Requisition"`.
   `do-game`-Test (Regel greift bei erfüllten Vorbedingungen, greift NICHT
   bei fehlenden), plus der Sicherheitspuffer-Test (Agenda wird NICHT
   installiert, wenn `estimated-cost` zwischen aktuellem Runner-Credit und
-  Runner-Credit+Puffer liegt).
-- Abschluss: `bot.sim`-Lauf (200 Partien Heuristik-Corp vs. Random-Runner)
-  gegen die dokumentierte Baseline (Random-Corp 121/Random-Runner 79 von
-  200) — Erfolgskriterium "deutlich häufiger" wird im Plan als konkrete
-  Schwelle festgelegt (z. B. ≥ 140/200), keine exakte Formel hier in der
-  Spec.
+  Runner-Credit+Puffer liegt) UND ein Mulligan-Test je Fall (leere Hand ohne
+  Ice/Econ → Mulligan; Hand mit Ice ODER Econ → Keep).
+- Abschluss: `bot.sim`-Lauf (200 Partien Heuristik-Corp vs. Random-Runner),
+  Erfolgskriterium ist die feste Schwelle aus "Ziel" oben (**≥ 140/200**
+  Corp-Siege).
 
 ## Nicht-Ziele (YAGNI, v1)
 
