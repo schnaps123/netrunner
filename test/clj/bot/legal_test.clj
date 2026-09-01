@@ -121,3 +121,24 @@
       (is (contains? (commands-of corp-opts) "rez")))
     (let [runner-opts (legal/run-actions (view/view-for state :runner) :runner)]
       (is (contains? (commands-of runner-opts) "continue")))))
+
+(deftest rez-ausserhalb-eines-runs-anbieten
+  (do-game
+    (new-game {:corp {:hand ["Ice Wall"] :credits 10}})
+    (play-from-hand state :corp "Ice Wall" "HQ")
+    (let [actions (legal/turn-actions (view/view-for state :corp) :corp)
+          rez-actions (filter #(= "rez" (:command %)) actions)]
+      (is (= 1 (count rez-actions)))
+      (is (= "Ice Wall" (get-in (first rez-actions) [:args :card :title]))))))
+
+(deftest rezztes-ice-bekommt-keine-rez-option-mehr
+  (do-game
+    (new-game {:corp {:hand ["Ice Wall"] :credits 10}})
+    (play-from-hand state :corp "Ice Wall" "HQ")
+    (rez state :corp (get-ice state :hq 0))
+    (let [actions (legal/turn-actions (view/view-for state :corp) :corp)]
+      (is (not (contains? (commands-of actions) "rez"))))))
+
+(deftest server-name-ist-oeffentlich
+  (is (= "HQ" (legal/server-name :hq)))
+  (is (= "Server 3" (legal/server-name :remote3))))
