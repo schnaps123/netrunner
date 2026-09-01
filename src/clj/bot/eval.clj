@@ -227,8 +227,20 @@
 (defn evaluate-view
   "Wie `evaluate`, nimmt aber eine bereits berechnete View statt `state` —
   der Einstiegspunkt für Bot-Konsumenten, die nur eine View besitzen (siehe
-  servers-threat-Docstring)."
+  servers-threat-Docstring). `side` ist redundant zu `v` (die View selbst
+  trägt keinen Marker, für welche Seite sie berechnet wurde —
+  game.core.diffs/state-summary hängt keinen an, und ihn herzuleiten wäre
+  fragil: eine leere Hand macht 'wessen Hand ist voll sichtbar' mehrdeutig)
+  und könnte ihr widersprechen (View für :corp berechnet, aber :runner
+  übergeben) — der Precondition-Assert fängt wenigstens vertauschte/falsch
+  getippte side-Argumente ab.
+  :score gilt als NULLSUMME zwischen (evaluate-view v :corp) und
+  (evaluate-view v :runner) nur, wenn das Board vollständig sichtbar ist
+  (alles rezzt) — sonst weichen die servers-threat-Schätzungen beider
+  Seiten für unrezztes Ice asymmetrisch voneinander ab (UNKNOWN-ICE-*-
+  Defaults vs. echte Werte)."
   [v side]
+  {:pre [(contains? #{:corp :runner} side)]}
   (let [opp (opponent side)
         own (get v side)
         their (get v opp)
@@ -254,8 +266,9 @@
 
 (defn evaluate
   "Bewertet `state` aus Sicht von `side` (:corp oder :runner) — dünner
-  Wrapper um evaluate-view (siehe dort), berechnet nur die View. Symmetrisch:
-  (evaluate state :corp) und (evaluate state :runner) summieren sich in
-  ihrem :score zu 0."
+  Wrapper um evaluate-view (siehe dort), berechnet nur die View. :score ist
+  nur bei vollständig sichtbarem Board (alles rezzt) eine echte Nullsumme
+  zwischen (evaluate state :corp) und (evaluate state :runner) — siehe
+  evaluate-view-Docstring."
   [state side]
   (evaluate-view (view/view-for state side) side))

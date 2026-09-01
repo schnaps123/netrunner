@@ -229,9 +229,38 @@
            (beval/evaluate-view (bview/view-for state :corp) :corp))
         "evaluate ist nur noch ein duenner Wrapper um evaluate-view")))
 
+(deftest unrezztes-eigenes-ice-liefert-echte-break-kosten
+  ;; Corp sieht die eigenen Subroutinen/Staerke IMMER, unabhaengig vom
+  ;; Rez-Status (is-public? ist fuer :corp auf eigene Karten immer wahr,
+  ;; game.core.card/is-public? side-Zweig :corp) -- best-breach-cost darf
+  ;; fuer unrezztes eigenes Ice nicht auf subs-count=0 zurueckfallen und
+  ;; die Bedrohung systematisch unterschaetzen.
+  (do-game
+    (new-game {:corp {:hand ["Bastion"] :credits 10}
+               :runner {:hand ["Corroder"] :credits 10}})
+    (play-from-hand state :corp "Bastion" "New remote")
+    (take-credits state :corp)
+    (play-from-hand state :runner "Corroder")
+    (take-credits state :runner)
+    (let [unrezzt (get-in (beval/evaluate state :corp) [:servers :remote1 :estimated-cost])]
+      (rez state :corp (get-ice state :remote1 0))
+      (let [rezzt (get-in (beval/evaluate state :corp) [:servers :remote1 :estimated-cost])]
+        (is (= 3 unrezzt) "Pump(2*1cr)+Break(1*1cr)=3, identisch zum rezzten Fall")
+        (is (= unrezzt rezzt))))))
+
 (deftest servers-threat-ist-oeffentlich-und-view-basiert
   (do-game
     (new-game {:corp {:hand ["Ice Wall"]}})
     (play-from-hand state :corp "Ice Wall" "HQ")
     (rez state :corp (get-ice state :hq 0))
     (is (contains? (beval/servers-threat (bview/view-for state :corp)) :hq))))
+
+(deftest evaluate-view-lehnt-ungueltige-side-ab
+  ;; Die View traegt selbst keinen Marker, fuer welche Seite sie berechnet
+  ;; wurde (game.core.diffs/state-summary haengt keinen an) -- eine echte
+  ;; Herleitung waere fragil (z.B. leere Hand macht "wessen Hand ist voll
+  ;; sichtbar" mehrdeutig). Ein Precondition-Assert faengt wenigstens den
+  ;; haeufigsten Fehler ab: side vertauscht/falsch getippt.
+  (do-game
+    (new-game)
+    (is (thrown? AssertionError (beval/evaluate-view (bview/view-for state :corp) :not-a-side)))))
