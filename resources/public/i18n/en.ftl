@@ -947,6 +947,8 @@ lobby_bot-deck = Bot deck
 lobby_bot-difficulty = Bot difficulty
 
 lobby_bot-difficulty-random = Random
+lobby_bot-difficulty-heuristic = Heuristic
+lobby_bot-difficulty-corp-only-hint = Heuristic is currently Corp-only; Runner bots always play Random.
 
 lobby_bot-vs-bot = Bot vs. bot
 

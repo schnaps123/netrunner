@@ -1,5 +1,6 @@
 (ns nr.new-game
   (:require
+    [bot.difficulties :as bot-difficulties]
     [jinteki.utils :refer [str->int descriptions]]
     [jinteki.preconstructed :refer [all-matchups matchup-by-key]]
     [nr.appstate :refer [app-state]]
@@ -66,6 +67,18 @@
      :placeholder (tr [:lobby_title "Title"])
      :maxLength "100"}]])
 
+(defn- difficulty-label
+  "Statischer tr-Aufruf pro Schwierigkeitsgrad — der Übersetzungs-Scanner
+  (lein undefined-translations/unused-translations) braucht literale
+  (tr [:key ...])-Aufrufe im Quelltext. WELCHE Grade überhaupt angeboten
+  werden kommt trotzdem dynamisch aus bot.difficulties (siehe
+  game-type-section), nicht aus dieser Funktion."
+  [difficulty]
+  (case difficulty
+    "random" (tr [:lobby_bot-difficulty-random "Random"])
+    "heuristic" (tr [:lobby_bot-difficulty-heuristic "Heuristic"])
+    difficulty))
+
 (defn game-type-section [state]
   [:section
    [tr-element :h3 [:lobby_game-type "Game type"]]
@@ -88,16 +101,27 @@
                                (swap! state assoc :side "Corp"))))}]
          (tr [tr-key label])]]))
    (when (:bot-game @state)
-     [:div
-      [:p
-       [:label (tr [:lobby_bot-deck "Bot deck"]) " "
-        [:select {:value "gateway" :disabled true}
-         [:option {:value "gateway"} "System Gateway Starter"]]]]
-      [:p
-       [:label (tr [:lobby_bot-difficulty "Bot difficulty"]) " "
-        [:select {:value (or (:difficulty @state) "random")
-                  :on-change #(swap! state assoc :difficulty (.. % -target -value))}
-         [:option {:value "random"} (tr [:lobby_bot-difficulty-random "Random"])]]]]])])
+     (let [available (bot-difficulties/options-for-lobby (:bot-game @state) (:side @state))
+           current (if (contains? (set available) (:difficulty @state))
+                     (:difficulty @state)
+                     (first available))]
+       [:div
+        [:p
+         [:label (tr [:lobby_bot-deck "Bot deck"]) " "
+          [:select {:value "gateway" :disabled true}
+           [:option {:value "gateway"} "System Gateway Starter"]]]]
+        [:p
+         [:label (tr [:lobby_bot-difficulty "Bot difficulty"]) " "
+          [:select {:value (or current "random")
+                    :on-change #(swap! state assoc :difficulty (.. % -target -value))}
+           (doall
+             (for [d available]
+               ^{:key d}
+               [:option {:value d} (difficulty-label d)]))]]]
+        (when (not (contains? (set available) "heuristic"))
+          [:p.smaller {:style {:opacity 0.7}}
+           (tr [:lobby_bot-difficulty-corp-only-hint
+                "Heuristic is currently Corp-only; Runner bots always play Random."])])]))])
 
 (defn side-section [side-state sides]
   [:section
@@ -309,6 +333,22 @@
                               :description (when casual?
                                              (get-in @app-state [:options :default-game-description]))
                               :title (str (:username @user) "'s game")})
+               ;; Haelt :difficulty konsistent mit der tatsaechlich angezeigten
+               ;; Auswahl: game-type-section clamped nur die DARSTELLUNG, wenn
+               ;; ein Side-/Bot-Game-Wechsel den bisherigen Wert ungueltig macht
+               ;; (z.B. "heuristic" waehrend Bot=Corp gewaehlt, dann auf
+               ;; Bot=Runner umgeschaltet) - ohne diesen Watch wuerde Create
+               ;; trotzdem noch den alten, nicht mehr angezeigten Wert senden.
+               _difficulty-guard
+               (add-watch state ::difficulty-guard
+                          (fn [_ _ old new]
+                            (when (or (not= (:bot-game old) (:bot-game new))
+                                      (not= (:side old) (:side new)))
+                              (let [available (bot-difficulties/options-for-lobby
+                                                (:bot-game new) (:side new))]
+                                (when (and (seq available)
+                                           (not (contains? (set available) (:difficulty new))))
+                                  (swap! state assoc :difficulty (first available)))))))
                options (r/atom {:allow-spectator true
                                 :api-access false
                                 :password (when protected? default-password)
