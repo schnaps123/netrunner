@@ -345,6 +345,10 @@
 (defn- remote-has-agenda? [view zone]
   (boolean (some agenda-card? (server-content view zone))))
 
+(defn- remaining-advancement [agenda]
+  (- (or (:current-advancement-requirement agenda) 0)
+     (+ (:advance-counter agenda 0) (:extra-advance-counter agenda 0))))
+
 (defn- candidate-agenda-points
   "Punktwert der ersten Agenda in der Hand (first-play-of-type in
   try-install-agenda wählt ohnehin per Handreihenfolge) -- DEFAULT-AGENDA-
@@ -392,12 +396,44 @@
        (keep :cost)
        (apply max 0)))
 
-(defn- credit-ready?
-  "Kann sich die Corp JETZT leisten, das teuerste einzelne unrezzte Ice auf
-  `zone` zu rezzen (plus REZ-BUDGET-MARGIN)? Scoring-Fenster-Dimension
-  ':credits' (Design-Spec Scoring-Fenster-Zielmodell, Phase 1)."
+(defn- remaining-advancement-cost
+  "Credits, um eine im Scoring-Remote bereits liegende, unfertig advancte
+  Agenda fertig zu advancen -- 1 Credit pro 'advance'-Klick (Basisaktion,
+  siehe corp-click-actions), 0 wenn keine Agenda dort liegt oder sie schon
+  fertig ist. Teil von credit-ready? (siehe dort).
+
+  BEKANNTE UEBERSTRENGE (notiert 2026-09-03, noch NICHT behoben): verlangt
+  aktuell die GESAMTEN Restadvancement-Kosten auf einmal. Das ist zu
+  streng -- die Credits fuer spaetere Advances kann die Corp in den
+  FOLGENDEN Zuegen verdienen (Regel 3.5/try-fund-score-line deckt genau
+  das schon ab), sie schon beim Install zu verlangen blockiert das
+  Scoring-Fenster unnoetig lange. 200-Partien-Vergleich (2026-09-03):
+  Agenda-Siege 57 -> 48 nach dieser Aenderung, Gap-Verteilung kippte auf
+  :credits als dominante Dimension (6597 von ~12800 Gap-Eintraegen) --
+  passt zu dieser Ueberstrenge als Erklaerung, auch wenn der Rueckgang
+  allein am Rand des dokumentierten ±5-Rauschens liegt. Naechste Session:
+  hier auf HOECHSTENS EINEN Advance-Schritt (1 Credit) begrenzen, statt
+  (max 0 (remaining-advancement agenda)) den vollen Rest zu verlangen."
   [view zone]
-  (>= (corp-credit view) (+ (max-unrezzed-ice-rez-cost view zone) REZ-BUDGET-MARGIN)))
+  (if-let [agenda (first (filter agenda-card? (server-content view zone)))]
+    (max 0 (remaining-advancement agenda))
+    0))
+
+(defn- credit-ready?
+  "Kann sich die Corp JETZT leisten, (a) das teuerste einzelne unrezzte Ice
+  auf `zone` zu rezzen (plus REZ-BUDGET-MARGIN) UND (b) eine dort bereits
+  liegende, unfertig advancte Agenda fertig zu advancen (remaining-
+  advancement-cost)? Scoring-Fenster-Dimension ':credits' (Design-Spec
+  Scoring-Fenster-Zielmodell, Phase 1). Korrektur 2026-09-03, aus einer
+  echten Partie: eine Agenda mit 3 von 4 Advancements lag im Remote, der
+  Bot hatte 0 Credits -- credit-ready? kannte bis dahin nur das Rez-Budget,
+  nicht die Advance-Kosten bis zum Score, meldete das Fenster also
+  faelschlich als 'Credits bereit' und Regel 3.5 (siehe
+  try-fund-score-line) konnte nie greifen."
+  [view zone]
+  (>= (corp-credit view)
+      (+ (max-unrezzed-ice-rez-cost view zone) REZ-BUDGET-MARGIN
+         (remaining-advancement-cost view zone))))
 
 (defn- scoring-window-gap
   "Welche der drei Scoring-Fenster-Voraussetzungen fehlen gerade für
@@ -472,21 +508,46 @@
 
 ;; --- Regel 1+2: Ice installieren ---
 
+(defn- ice-install-surcharge
+  "Zusätzlicher Credit-Preis, ein Ice auf `zone` zu installieren -- 1 Credit
+  pro bereits vorhandenem Ice dort (game.core.installing/corp-install-cost:
+  ice-cost = Anzahl Karten im Ziel-Slot). 0 für :new-remote (noch kein
+  Slot, keine Vorbelegung)."
+  [view zone]
+  (if (= :new-remote zone)
+    0
+    (count (server-ices view zone))))
+
+(defn- ice-install-affordable?
+  "Kann sich die Corp den VOLLEN Installationspreis (Kartenkosten +
+  ice-install-surcharge) für `card` auf `zone` leisten, OHNE dabei
+  bereits installiertes eigenes Ice trashen zu müssen? Die Engine bietet
+  als Rückfall-Zahlungsvariante an, vorhandenes Ice auf demselben Server
+  zu trashen, um eine Differenz zu decken (game.core.installing/corp-
+  install-pay) -- ohne diese Prüfung würde try-install-ice das Angebot
+  wählen, auch wenn die Engine dafür eigene Ice-Karten opfern müsste.
+  Korrektur 2026-09-03, aus einer echten Partie: der Bot trashte zweimal
+  eigenes Ice auf HQ, um ein neues Ice günstiger zu installieren -- netto
+  ein Server, der dadurch SCHWÄCHER statt stärker wurde."
+  [view zone card]
+  (>= (corp-credit view) (+ (or (:cost card) 0) (ice-install-surcharge view zone))))
+
 (defn- try-install-ice
   [view legal-actions run-history]
   (when-let [target (ice-install-target view run-history)]
     (when-let [act (first-play-of-type legal-actions "ICE")]
-      (let [central? (= target (central-needing-ice view run-history))]
-        {:action act
-         :reason (str "heuristic-corp: Regel "
-                      (if central?
-                        (str "1 (Zentralserver icen, Taxierung "
-                             (or (:estimated-cost (server-threat-for view target)) 0)
-                             "<=Runner-Einkommen/Zug(" ASSUMED-RUNNER-INCOME-PER-TURN "), "
-                             (recent-breach-count run-history target (get view :turn 0))
-                             " Breach(es) in " BREACH-WINDOW-TURNS " Zügen)")
-                        "2 (Scoring-Remote aufbauen)")
-                      " -> " (server-label target) ", installiere " (get-in act [:args :card :title]))}))))
+      (when (ice-install-affordable? view target (get-in act [:args :card]))
+        (let [central? (= target (central-needing-ice view run-history))]
+          {:action act
+           :reason (str "heuristic-corp: Regel "
+                        (if central?
+                          (str "1 (Zentralserver icen, Taxierung "
+                               (or (:estimated-cost (server-threat-for view target)) 0)
+                               "<=Runner-Einkommen/Zug(" ASSUMED-RUNNER-INCOME-PER-TURN "), "
+                               (recent-breach-count run-history target (get view :turn 0))
+                               " Breach(es) in " BREACH-WINDOW-TURNS " Zügen)")
+                          "2 (Scoring-Remote aufbauen)")
+                        " -> " (server-label target) ", installiere " (get-in act [:args :card :title]))})))))
 
 (defn- find-legal [legal-actions command pred]
   (first (filter #(and (= command (:command %)) (pred %)) legal-actions)))
@@ -550,10 +611,6 @@
                         (str " -- Geduldsgrenze erreicht (SCORING-PATIENCE-TURNS="
                              SCORING-PATIENCE-TURNS "), installiere trotz unsicherer Taxierung"))
                       " -> installiere " (get-in act [:args :card :title]))}))))
-
-(defn- remaining-advancement [agenda]
-  (- (or (:current-advancement-requirement agenda) 0)
-     (+ (:advance-counter agenda 0) (:extra-advance-counter agenda 0))))
 
 ;; --- Regel 4: Scoren ---
 
@@ -675,6 +732,32 @@
     (when (and (seq ice-opts) (or (central-needing-ice view run-history) remote-needs-ice?))
       (first ice-opts))))
 
+;; --- Prompt-Routing: Trash-um-zu-bezahlen-Ice (Rückfallabsicherung) ---
+
+(defn- trash-to-pay-ice-prompt?
+  "Ist `prompt` der Trash-um-zu-bezahlen-Prompt (game.core.installing/
+  corp-install-pay: reicht das Kreditguthaben für einen Ice-Install nicht,
+  bietet die Engine an, vorhandenes Ice auf demselben Server zu trashen)?
+  Am Nachrichtentext erkannt ('Trash ice protecting ...', siehe dort)."
+  [prompt]
+  (str/starts-with? (or (:msg prompt) "") "Trash ice protecting"))
+
+(defn- trash-to-pay-ice-choice
+  "Wählt für den Trash-um-zu-bezahlen-Prompt IMMER zuerst unrezztes Ice --
+  rezztes Ice schützt den Server aktiv, ein Tausch 'eigenes Ice weg für ein
+  neues billiger' ist strukturell ein Verlustgeschäft (Korrektur
+  2026-09-03, aus einer echten Partie: der Bot trashte zweimal eigenes Ice
+  auf HQ, um ein neues Ice für 0 Credit zu installieren, und machte den
+  Server damit netto SCHWÄCHER). Reine Rückfallabsicherung -- try-install-
+  ice (siehe ice-install-affordable?) verhindert bereits, dass der Bot
+  selbst in diesen Prompt hineinläuft; dieser Handler greift nur, falls die
+  Engine ihn dennoch zeigt (z.B. durch einen dem Bot unbekannten
+  Kostenmodifikator)."
+  [options]
+  (let [cands (card-options options)
+        unrezzed (remove #(:rezzed (:card %)) cands)]
+    (first (or (seq unrezzed) cands))))
+
 (defn- random-fallback-with-log
   "Delegiert an random-delegate, hängt aber eine sichtbare Markierung an
   den Reason-String -- 'kein Regel-Handler fuer diesen Prompt-Typ' soll im
@@ -779,6 +862,46 @@
       (try-draw view legal-actions)
       (when-let [act (find-legal legal-actions "credit" (constantly true))]
         {:action act :reason "heuristic-corp: Regel 5.6 (Klick fuer Credit)"})))
+
+;; --- Regel 3.5: Credits fuer eine laufende Score-Linie beschaffen ---
+
+(defn- score-line-blocked-by-credits?
+  "Liegt im Scoring-Remote eine unfertig advancte Agenda, UND ist das
+  naechste 'advance' gerade NICHT möglich, weil die Corp 0 Credits hat
+  (corp-click-actions bietet 'advance' nur bei (pos? credits) an -- die
+  Basisaktion kostet immer genau 1 Klick + 1 Credit)? Grundlage für
+  try-fund-score-line: eine liegende, unfertige Agenda ist die riskanteste
+  Position im Spiel (siehe try-score-line) -- fehlt NUR das Geld dafür, ist
+  Credits-Beschaffen wichtiger als jedes neue Projekt."
+  [view legal-actions]
+  (when-let [zone (scoring-remote-zone view)]
+    (when (remote-has-agenda? view zone)
+      (let [agenda (first (filter agenda-card? (server-content view zone)))]
+        (and (pos? (remaining-advancement agenda))
+             (zero? (corp-credit view))
+             (nil? (find-legal legal-actions "advance"
+                               #(= (:title agenda) (get-in % [:args :card :title])))))))))
+
+(defn- try-fund-score-line
+  "Regel 3.5: blockiert eine laufende Score-Linie AUSSCHLIESSLICH das Fehlen
+  von Credits (score-line-blocked-by-credits?), ist Credits-Beschaffen die
+  hoechste Prioritaet -- vor neuen Projekten (weiteres Ice auf einem
+  ANDEREN/neuen Server, Regel 1/2) und vor Ziehen (Regel 5.5, bringt keine
+  Credits). Aus einer echten Partie: Agenda mit 3/4 Advancements im Remote,
+  0 Credits -- der Bot bestueckte stattdessen einen neuen Server und zog,
+  statt die schon fast fertige Agenda zu finanzieren. Nutzt dieselbe
+  Prioritaet wie Regel 5.1-5.4/5.6 (Asset installieren -> Asset rezzen ->
+  Klick-Ability -> Operation spielen -> genereller Credit-Klick), NUR OHNE
+  Regel 5.5 (Ziehen bringt keine Credits fuers naechste Advance)."
+  [view legal-actions]
+  (when (score-line-blocked-by-credits? view legal-actions)
+    (some-> (or (try-install-econ-asset view legal-actions)
+                (try-rez-econ-asset view legal-actions)
+                (try-econ-click-ability view legal-actions)
+                (try-play-econ-operation view legal-actions)
+                (when-let [act (find-legal legal-actions "credit" (constantly true))]
+                  {:action act :reason "heuristic-corp: Regel 5.6 (Klick fuer Credit)"}))
+            (update :reason #(str "heuristic-corp: Regel 3.5 (Credits fuer laufende Score-Linie beschaffen) -> " %)))))
 
 ;; --- Prompt-Routing: Server-Wahl ---
 
@@ -973,6 +1096,7 @@
                      ;; Ice bauen, sonst blockiert Regel 1/2 das Advancen
                      ;; ganzer Züge lang (in einer echten Partie bestätigt).
                      (or (try-score-line view legal-actions)
+                         (try-fund-score-line view legal-actions)
                          (try-install-ice view legal-actions run-history)
                          (try-install-agenda view legal-actions run-history)
                          (try-draw-for-scoring-window view legal-actions)
@@ -1007,7 +1131,12 @@
                                             (:label opt) " (teuerstes rezzbares Ice)")})
                 (when-let [opt (free-install-offer-choice view run-history options)]
                   {:option opt :reason (str "heuristic-corp: Regel (Gratis-/Rabatt-Install-Angebot) -> "
-                                            (:label opt))})))
+                                            (:label opt))})
+                (when (trash-to-pay-ice-prompt? prompt)
+                  (when-let [opt (trash-to-pay-ice-choice options)]
+                    {:option opt
+                     :reason (str "heuristic-corp: Regel (Trash-um-zu-bezahlen, Rueckfall) -> " (:label opt)
+                                  " (unrezzt bevorzugt, nie wertvolles Ice zuerst geopfert)")}))))
           (random-fallback-with-log random-delegate view prompt options)))))
 
 (defn heuristic-corp-bot

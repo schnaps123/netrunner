@@ -152,6 +152,34 @@
       (is (str/includes? (:reason decision) "kein Playbook-Handler")
           "kein Bedarf -> kein gezielter Griff, sichtbar an den Zufall delegiert"))))
 
+(deftest trash-um-zu-bezahlen-prompt-waehlt-unrezztes-ice-zuerst
+  ;; Bug aus einer echten Partie (dritte Partie): der Bot trashte zweimal
+  ;; eigenes Ice, um ein neues guenstiger zu installieren (Ice-Install
+  ;; kostet 1 Credit pro bereits vorhandenem Ice auf dem Server, die Engine
+  ;; bietet als Rueckfall-Zahlungsvariante an, vorhandenes Ice zu trashen).
+  ;; try-install-ice verhindert das jetzt bereits am Entscheidungspunkt
+  ;; (siehe ice-install-affordable?); dieser Test prueft direkt den
+  ;; Rueckfall-Prompt-Handler: rezztes Ice (schuetzt aktiv) wird niemals
+  ;; vor unrezztem geopfert.
+  (do-game
+    (new-game {:corp {:hand ["Ice Wall" "Bastion"] :credits 20}})
+    (play-from-hand state :corp "Ice Wall" "HQ")
+    (play-from-hand state :corp "Bastion" "HQ")
+    (rez state :corp (get-ice state :hq 1))
+    (core/resolve-ability
+     state :corp
+     {:prompt "Trash ice protecting HQ (minimum 1)"
+      :choices {:card #(and (:installed %) (= "ICE" (:type %)))}
+      :effect (fn [_ _ _ _ _])}
+     (get-in @state [:corp :identity]) nil)
+    (let [bot (hc/heuristic-corp-bot 1)
+          v (view/view-for state :corp)
+          prompt (get-in v [:corp :prompt-state])
+          options (legal/prompt-options v :corp)
+          decision (bp/on-prompt bot v prompt options)]
+      (is (= "Ice Wall" (:label (:option decision)))
+          "unrezztes Ice Wall gewaehlt statt rezztes Bastion"))))
+
 (deftest pflicht-abwurf-wirft-nie-eine-agenda-ab
   ;; Bug aus einer echten Partie (zweite Partie): der Pflicht-Abwurf-Prompt
   ;; am Zugende (game.core.turns/handle-end-of-turn-discard) fiel ungehandelt
@@ -402,6 +430,34 @@
           "unsicherer Remote (Runner hat 20 Credits) -> zweites Ice statt Agenda-Install")
       (is (empty? (get-content state :remote1))))))
 
+(deftest regel-2-kein-ice-install-wenn-nur-durch-eigenes-ice-trashen-bezahlbar
+  ;; Bug aus einer echten Partie (dritte Partie, Zuege 12+15): der Bot
+  ;; trashte zweimal eigenes Ice, um ein drittes fuer 0 Credit zu
+  ;; installieren -- netto ein Server, der dadurch SCHWAECHER wurde.
+  ;; Aufbau wie regel-2-weiteres-ice-in-unsicheren-scoring-remote oben,
+  ;; aber Credits danach auf 1 reduziert: reicht fuer die Kartenkosten von
+  ;; Ice Wall (1) allein, NICHT fuer Kartenkosten + Ice-Install-Aufpreis
+  ;; (1 Credit fuer das bereits vorhandene Ice Wall auf dem Remote).
+  (do-game
+    (new-game {:corp {:hand ["Priority Requisition" "Bastion" "Bastion" "Bastion" "Ice Wall" "Ice Wall"]
+                      :credits 20}
+               :runner {:credits 20}})
+    (core/gain state :corp :click 10)
+    (play-from-hand state :corp "Bastion" "HQ")
+    (play-from-hand state :corp "Bastion" "R&D")
+    (play-from-hand state :corp "Bastion" "Archives")
+    (play-from-hand state :corp "Ice Wall" "New remote")
+    (swap! state assoc-in [:corp :credit] 1)
+    (let [bot (hc/heuristic-corp-bot 1)
+          v (view/view-for state :corp)
+          actions (legal/turn-actions v :corp)
+          decision (bp/decide bot v actions)]
+      (is (not (str/includes? (:reason decision) "Regel 2"))
+          "1 Credit deckt Kartenkosten (1), aber nicht +Aufpreis(1 vorhandenes Ice) -- kein Install")
+      (game-runner/decide-one! {:state state :side :corp :kind :action :bot bot})
+      (is (= 1 (count (get-ice state :remote1)))
+          "kein zweites Ice installiert, wenn nur durch Ice-Trashen bezahlbar"))))
+
 (deftest regel-3-agenda-platzieren-wenn-sicher
   ;; Alle Zentralserver zuerst manuell (nicht ueber den Bot) icen, sonst
   ;; wuerde Regel 1 vor Regel 3 greifen und der Test isoliert nicht die
@@ -460,6 +516,30 @@
         (game-runner/decide-one! {:state state :side :corp :kind :action :bot bot})
         (game-runner/decide-one! {:state state :side :corp :kind :prompt :bot bot})
         (is (= "Priority Requisition" (:title (get-content state :remote1 0))))))))
+
+(deftest regel-scoring-fenster-credits-erfordert-auch-restadvancement-kosten
+  ;; Korrektur 2026-09-03, aus einer echten Partie: Agenda mit 3 von 4
+  ;; Advancements im Remote, 0 Credits -- credit-ready? kannte bisher nur
+  ;; das Rez-Budget, nicht die Advance-Kosten bis zum Score. Remote-Ice
+  ;; schon rezzt (max-unrezzed-ice-rez-cost=0), Credits genau am REZ-BUDGET-
+  ;; MARGIN (reicht fuers Rez-Budget allein) -- die alte Formel haette
+  ;; :credits faelschlich als "bereit" gemeldet, obwohl noch 4 Advance-
+  ;; Klicks (4 Credits) fehlen.
+  (do-game
+    (new-game {:corp {:hand ["Priority Requisition" "Bastion"] :credits 20}
+               :runner {:credits 0}})
+    (core/gain state :corp :click 10 :credit 10)
+    (play-from-hand state :corp "Bastion" "New remote")
+    (rez state :corp (get-ice state :remote1 0))
+    (play-from-hand state :corp "Priority Requisition" "Server 1")
+    (click-advance state :corp (get-content state :remote1 0))
+    (swap! state assoc-in [:corp :credit] hc/REZ-BUDGET-MARGIN)
+    (let [bot (hc/heuristic-corp-bot 1)
+          v (view/view-for state :corp)
+          actions (legal/turn-actions v :corp)
+          decision (bp/decide bot v actions)]
+      (is (contains? (:scoring-gap decision) :credits)
+          "Rez-Budget allein reicht (Bastion schon rezzt), aber Restadvancement-Kosten fehlen noch"))))
 
 (deftest regel-3-commitment-als-risikoabwaegung-nicht-als-sicherheitsgarantie
   ;; Scoring-Fenster-Zielmodell Phase 2: absolute Sicherheit (Kosten >
@@ -836,6 +916,32 @@
       (game-runner/decide-one! {:state state :side :corp :kind :prompt :bot bot})
       (is (= 3 (get-counters (get-content state :remote1 0) :advancement))
           "Seamless Launch (+2) muss trotz frueher in der Hand liegendem Hedge Fund gewaehlt werden"))))
+
+(deftest regel-3-5-credits-fuer-laufende-score-linie-vor-ziehen
+  ;; Bug aus einer echten Partie (dritte Partie, Zug 16): Agenda mit 3/4
+  ;; Advancements im Remote, 0 Credits -- der Bot bestueckte einen neuen
+  ;; Server und zog, statt Credits fuer die schon fast fertige Agenda zu
+  ;; beschaffen. 0 Credits -> "advance" ist nicht legal (Basisaktion kostet
+  ;; 1 Klick + 1 Credit) -> Regel 3.5 outrankt Ziehen (Regel 5.5) UND neue
+  ;; Ice-Projekte (leere Hand -- kein Ice zum Installieren ohnehin, aber
+  ;; auch keine Econ-Karte -- generischer Credit-Klick, Regel 5.6, bleibt
+  ;; als einziges legales Mittel)."
+  (do-game
+    (new-game {:corp {:hand ["Priority Requisition"]
+                      :deck (repeat 15 "Hedge Fund")
+                      :credits 20}
+               :runner {:credits 0}})
+    (core/gain state :corp :click 10 :credit 10)
+    (play-from-hand state :corp "Priority Requisition" "New remote")
+    (click-advance state :corp (get-content state :remote1 0))
+    (swap! state assoc-in [:corp :credit] 0)
+    (let [bot (hc/heuristic-corp-bot 1)
+          v (view/view-for state :corp)
+          actions (legal/turn-actions v :corp)
+          decision (bp/decide bot v actions)]
+      (is (str/includes? (:reason decision) "Regel 3.5")
+          "0 Credits blockieren die laufende Score-Linie -> Credits-Beschaffen schlaegt Ziehen")
+      (is (str/includes? (:reason decision) "Regel 5.6")))))
 
 (deftest regel-5-1-econ-asset-installieren
   (do-game
