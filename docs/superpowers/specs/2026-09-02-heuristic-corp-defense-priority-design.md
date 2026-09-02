@@ -348,3 +348,122 @@ schwächt statt nur zu warten.
   komplett ersetzt oder als zusätzliche Metaebene darüber läuft — das ist
   selbst eine offene Architekturfrage, die vor der Umsetzung geklärt werden
   müsste.
+
+---
+
+# Erweiterung: Mehrere Remotes statt Single-Remote-Fokus
+
+Datum: 2026-09-03 (Ergänzung)
+Status: Design-Entwurf, NICHT umgesetzt — reine Planung, erst nach den vier
+Bugfixes aus der zweiten gespielten Partie (Pflicht-Abwurf, Breite-vor-Tiefe,
+Remote-Priorität, Geduldsgrenze — siehe Commit-Historie 2026-09-02/03).
+
+## Warum der bisherige Single-Remote-Verzicht eine echte Schwäche ist
+
+`scoring-remote-zone` geht seit v1 durchgängig von GENAU EINEM relevanten
+Remote aus (Design-Spec Teil 2, YAGNI). Das war für den ersten funktionierenden
+Bot die richtige Vereinfachung, ist aber keine harmlose — sie kostet an vier
+unabhängigen Stellen echte Spielstärke:
+
+1. **Econ-Assets stehen nackt.** Regel 5.1 installiert Econ-Assets (Regolith
+   Mining License, Nico Campaign) in einen NEUEN, ungeschützten Remote (siehe
+   `try-install-econ-asset`-Reason: "ungeschützter neuer Remote -- trivial
+   trashbar, kein Schutz geplant" — offen dokumentierter Backlog-Punkt seit
+   dem ersten Spielpartie-Fixbatch). Ein eigener, ge-icter Econ-Remote löst
+   das direkt, statt einen separaten Schutzmechanismus zu bauen.
+2. **Der Runner taxiert nur über Credits, nicht über Zeit.** Mit einem
+   einzigen Remote genügt EIN Run, um zu wissen, ob dort etwas Wertvolles
+   liegt. Mehrere Remotes zwingen ihn, jeden einzeln zu prüfen — jeder
+   Check kostet einen Klick, unabhängig vom Ice dahinter. Das ist Taxierung
+   über Zeit/Klicks, eine Dimension, die die aktuelle Credit-zentrierte
+   `tax-sufficient?`-Bewertung gar nicht erfasst.
+3. **Die Unsicherheit selbst schützt.** Bei einem Remote weiß der Runner:
+   "wenn dort was liegt, ist es dort." Bei mehreren muss er raten, WELCHER
+   die Agenda trägt — das verbindet sich direkt mit dem oben dokumentierten
+   Köder-Konzept (Urtica Cipher in einem Zweit-Remote: die Unsicherheit
+   *ist* der Köder-Mechanismus, kein Add-on).
+4. **Keine Parallelität.** Aktuell arbeitet der Bot zwangsläufig sequenziell:
+   erst den einen Remote fertig bauen/absichern, dann Econ, weil beides um
+   denselben Remote konkurriert. Mit getrennten Remotes kann die Corp einen
+   Econ-Asset-Server laufen lassen UND gleichzeitig den Scoring-Remote
+   vorbereiten — echtes Netrunner-Spiel tut genau das.
+
+## Remote-Rollen
+
+Drei Rollen, jede mit eigenem Ice-Bedarf und eigener Fertigstellungs-Logik:
+
+- **Scoring-Remote** (bisherige alleinige Rolle): trägt die zu scorende
+  Agenda. Ice-Bedarf: bis MAX-ICE-PER-SCORING-REMOTE (unverändert, 3),
+  Sicherheitsschwelle über `safe-for-commitment?`/Geduldsgrenze wie bisher.
+  Genau EINER gleichzeitig aktiv (die eigentliche Agenda wird nicht auf
+  mehrere Remotes verteilt).
+- **Econ-Remote**: trägt installierte Econ-Assets (ECON-ASSET-CARDS). Ice-
+  Bedarf früh **ein bis zwei** Ice — genug, dass ein spontaner Runner-Klick
+  nicht kostenlos durchkommt, aber deutlich weniger als der Scoring-Remote,
+  weil der erwartete Schaden geringer ist (ein getrashtes Econ-Asset kostet
+  Tempo, keine Partie). Mehrere Econ-Assets können denselben Econ-Remote
+  teilen (Analogie zu Zentralservern: ein Server, mehrere Karten-Inhalte),
+  bevor ein zweiter Econ-Remote gerechtfertigt ist.
+- **Köder-Remote** (siehe Köder-Abschnitt oben): trägt eine advancierbare
+  Nicht-Agenda mit Bestrafungseffekt (Urtica Cipher). Ice-Bedarf ebenfalls
+  früh ein bis zwei — genug, dass der Köder nicht trivial wirkt, aber ohne
+  Ice-Investment auf Scoring-Remote-Niveau (der Ertrag ist Ablenkung, nicht
+  Punkte). Nur relevant, sobald das Ködern-Werkzeug selbst gebaut wird
+  (siehe oben, eigene offene Fragen).
+
+## Wann lohnt sich ein weiterer Remote statt Verstärkung des bestehenden?
+
+Analog zur Breite-vor-Tiefe-Korrektur bei Zentralservern (siehe oben), aber
+zwischen ROLLEN statt zwischen Zentralservern:
+
+```
+neuer-remote-fuer-rolle?(rolle) =
+  KEIN bestehender Remote dieser Rolle existiert
+  UND ein Auslöser für diese Rolle liegt vor
+    (Scoring: agenda-in-hand? ODER agendas-remaining-in-deck?, wie bisher)
+    (Econ: eine Econ-Asset-Karte in der Hand, noch kein Econ-Remote)
+    (Köder: should-bait? aus dem Köder-Abschnitt oben)
+```
+
+Verstärkung eines BESTEHENDEN Remotes (weiteres Ice) bleibt der Standardfall,
+solange dessen Rolle noch nicht abgeschlossen ist (Scoring: unsicher, unter
+der Obergrenze; Econ/Köder: unter deren jeweiliger, niedrigerer Obergrenze).
+Ein neuer Remote entsteht nur, wenn eine ROLLE noch KEINEN Remote hat — nicht,
+weil ein bestehender Remote irgendwann "voll genug" ist. Das verhindert, dass
+der Bot beliebig viele Remotes eröffnet, ohne dass jede Eröffnung durch einen
+konkreten Bedarf gedeckt ist (dieselbe Breite-vor-Tiefe-Disziplin wie bei
+Zentralservern, nur auf Rollen statt auf feste Server angewendet).
+
+## Auswirkung auf bestehenden Code
+
+- **`scoring-remote-zone`** müsste zu einer Rollen-Zuordnung werden
+  (`{zone rolle}` oder drei eigene Funktionen `scoring-remote-zone`/
+  `econ-remote-zone`/`bait-remote-zone`) statt einer einzelnen Zone. Jeder
+  Aufrufer, der aktuell `scoring-remote-zone` für "DEN Remote" hält (u.a.
+  `try-score-line`, `agenda-install-target`, `select-seamless-target`,
+  `track-remote-stall!`), muss auf die Scoring-Rolle spezifisch verweisen —
+  faktisch unverändert, nur umbenannt/präzisiert.
+- **Regel 2 (`ice-install-target`/`remote-ice-target`)** müsste die
+  Breite-vor-Tiefe-Reihenfolge (siehe oben, Zentralserver-Korrektur) auf
+  Remote-ROLLEN erweitern: erst jede benötigte Rolle ihren ersten Remote,
+  dann Nachverstärkung — analog zu `central-zero-ice-needing`/
+  `central-depth-needing`, aber über Rollen statt über die feste
+  `[:hq :rd :archives]`-Liste iteriert.
+- **Regel 3 (`try-install-agenda`)** bliebe inhaltlich unverändert (installiert
+  weiterhin ausschließlich in die Scoring-Rolle), müsste aber die
+  Econ-Install-Logik (aktuell `try-install-econ-asset` mit hartem
+  `"New remote"`-Ziel) durch eine rollen-bewusste Zielwahl ersetzen, die
+  einen BESTEHENDEN Econ-Remote wiederverwendet, statt bei jedem Econ-Asset
+  einen weiteren neuen Remote zu eröffnen.
+- **`select-target-server`** (Server-Wahl-Prompt-Routing) müsste für Assets
+  zwischen "neuer Econ-Remote" und "bestehender Econ-Remote" unterscheiden,
+  nicht mehr pauschal `"New remote"` zurückgeben.
+
+## Nicht-Ziele (diese Erweiterung)
+
+- Keine Implementierung — reine Planung wie der Rest dieses Dokuments.
+- Keine Festlegung der genauen Econ-/Köder-Ice-Obergrenzen-Konstanten (nur
+  die Größenordnung "ein bis zwei" ist hier skizziert).
+- Kein vollständiges Modell für "wie viele Remotes maximal gleichzeitig" —
+  in der Praxis vermutlich durch Klick-/Credit-Knappheit natürlich begrenzt,
+  aber nicht explizit hergeleitet.

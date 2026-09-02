@@ -11,7 +11,8 @@
    [bot.eval :as eval]
    [bot.legal :as legal]
    [bot.protocol :as bp]
-   [bot.random :as random]))
+   [bot.random :as random]
+   [clojure.string :as str]))
 
 ;; --- Konstanten (justierbar) ---
 
@@ -60,6 +61,30 @@
   und der Server gilt weiter als unsicher, bricht Regel 2 ab -- siehe
   ice-install-target; der Bot zieht/spielt Econ statt weiterzuicen."
   3)
+
+(def CENTRAL-ICE-BASE-DEPTH
+  "Bis zu dieser Ice-Zahl pro Zentralserver ist Nachverstaerkung auch OHNE
+  beobachteten Breach erlaubt (frueher Grundschutz). Darueber hinaus (mehr
+  als 1-2 Ice frueh auf demselben Server) nur, wenn der Breach-Zaehler
+  tatsaechlichen Druck auf GENAU diesem Server zeigt -- sonst verschwendet
+  Regel 1 Tempo auf einen Server, waehrend ein anderer Zentralserver noch gar
+  kein Ice hat (Breite-vor-Tiefe-Korrektur 2026-09-02, aus einer echten
+  Partie: Palisade+Whitespace+Diviner alle in Zug 1 auf HQ, R&D/Archives
+  blieben unberuehrt -- siehe central-zero-ice-needing/central-depth-needing)."
+  2)
+
+(def SCORING-PATIENCE-TURNS
+  "Nach so vielen Corp-Zuegen im Stall-Zustand (Scoring-Remote an der Ice-
+  Obergrenze, aber weiterhin nicht sicher genug fuer ein Commitment, Agenda
+  liegt in der Hand) installiert Regel 3 die Agenda trotzdem, statt weiter
+  auf 'sicher genug' zu warten -- siehe track-remote-stall!/
+  patience-exhausted?. Grund (aus einer echten Partie: :scoring-gap #{:tax}
+  stand ueber mehrere Zuege unveraendert, der Bot klickte bei 20-29 Credits
+  nur noch fuer Credits): der Remote wird durch simples Zuwarten NICHT
+  sicherer, wenn der Runner pro Zug mehr Einkommen hat als die Ice-
+  Obergrenze noch an zusaetzlicher Taxierung liefern kann -- warten ist fuer
+  die Corp die einzige garantiert verlierende Strategie. Justierbar."
+  4)
 
 (def HAND-SIZE-LOW
   "Handkartenzahl, ab der Ziehen (Regel 5.5) bevorzugt wird, selbst wenn
@@ -276,8 +301,38 @@
                           (get CENTRAL-BASE-RANK zone)])
              CENTRAL-ICE-PRIORITY)))
 
-(defn- central-needing-ice [view run-history]
-  (first (filter #(central-tax-too-low? view %) (central-priority-order view run-history))))
+(defn- central-zero-ice-needing
+  "Erster Zentralserver in Verstaerkungspriotitaet, der noch UNTER-taxiert
+  ist UND noch GAR KEIN Ice hat -- die Breite-Phase von Regel 1 (siehe
+  CENTRAL-ICE-BASE-DEPTH): jeder relevante Zentralserver bekommt sein
+  erstes Ice, bevor irgendeiner ein zweites bekommt."
+  [view run-history]
+  (first (filter #(and (central-tax-too-low? view %) (zero? (count (server-ices view %))))
+                 (central-priority-order view run-history))))
+
+(defn- central-depth-needing
+  "Erster Zentralserver in Verstaerkungspriotitaet, der noch UNTER-taxiert
+  ist und (a) unter CENTRAL-ICE-BASE-DEPTH liegt (frueher Grundschutz, auch
+  ohne Breach erlaubt) oder (b) tatsaechlichen Breach-Druck zeigt -- die
+  Tiefe-Phase von Regel 1, greift erst NACH der Breite-Phase (siehe
+  ice-install-target)."
+  [view run-history]
+  (let [current-turn (get view :turn 0)]
+    (first (filter (fn [zone]
+                     (and (central-tax-too-low? view zone)
+                          (let [ice-count (count (server-ices view zone))]
+                            (or (< ice-count CENTRAL-ICE-BASE-DEPTH)
+                                (pos? (recent-breach-count run-history zone current-turn))))))
+                   (central-priority-order view run-history)))))
+
+(defn- central-needing-ice
+  "Naechster Zentralserver, der laut Taxierung Ice braucht -- fuer Logging/
+  Central?-Erkennung in try-install-ice und fuer free-install-offer-choice.
+  NICHT direkt fuer die Ziel-Reihenfolge (siehe ice-install-target: Breite
+  vor Tiefe, Scoring-Remote dazwischen)."
+  [view run-history]
+  (or (central-zero-ice-needing view run-history)
+      (central-depth-needing view run-history)))
 
 (defn- scoring-remote-zone
   "Auswahl-Heuristik: erst Remote mit Agenda drin, sonst Remote mit >=1 Ice
@@ -360,31 +415,47 @@
     (not (safe-for-commitment? view zone)) (conj :tax)
     (not (agenda-in-hand? view)) (conj :agenda)))
 
+(defn- remote-ice-target
+  "Scoring-Remote-Zweig von Regel 2 (isoliert aus ice-install-target): greift,
+  wenn eine Agenda in der Hand liegt ODER laut Decklist noch welche im
+  Rest-Deck stecken (agendas-remaining-in-deck?) -- eine Agenda muss erst
+  FÜRS INSTALLIEREN (Regel 3) in der Hand liegen, nicht schon fürs Vorbauen:
+  echtes Netrunner-Spiel baut den Scoring-Remote vor, damit er fertig ist,
+  wenn die Agenda kommt. Sind alle Agenda-Kopien bereits anderswo
+  aufgetaucht (gescort/gestohlen/verworfen) UND liegt keine in der Hand,
+  gibt es keine realistische Aussicht mehr -- dann baut Regel 2 nicht mehr
+  blind weiter. MAX-ICE-PER-SCORING-REMOTE deckelt zusätzlich, wie oft
+  Regel 2 einen bestehenden Remote nachicet, bevor sie abbricht."
+  [view]
+  (when (or (agenda-in-hand? view) (agendas-remaining-in-deck? view))
+    (let [zone (scoring-remote-zone view)]
+      (cond
+        (nil? zone) :new-remote
+        (and (not (remote-has-agenda? view zone))
+             (not (safe-for-commitment? view zone))
+             (< (count (server-ices view zone)) MAX-ICE-PER-SCORING-REMOTE))
+        zone))))
+
 (defn- ice-install-target
   "Wohin als nächstes Ice installiert werden soll: Zone-Keyword eines
   Zentralservers, Zone-Keyword eines bestehenden, noch unsicheren Scoring-
   Remotes, `:new-remote` für einen frischen Remote, oder nil (kein
-  Ice-Install nötig). Der Scoring-Remote-Zweig (Regel 2, sowohl Eröffnung
-  als auch weiteres Ice) greift, wenn eine Agenda in der Hand liegt ODER
-  laut Decklist noch welche im Rest-Deck stecken (agendas-remaining-in-
-  deck?) -- eine Agenda muss erst FÜRS INSTALLIEREN (Regel 3) in der Hand
-  liegen, nicht schon fürs Vorbauen: echtes Netrunner-Spiel baut den
-  Scoring-Remote vor, damit er fertig ist, wenn die Agenda kommt. Sind alle
-  Agenda-Kopien bereits anderswo aufgetaucht (gescort/gestohlen/verworfen)
-  UND liegt keine in der Hand, gibt es keine realistische Aussicht mehr --
-  dann baut Regel 2 nicht mehr blind weiter. MAX-ICE-PER-SCORING-REMOTE
-  deckelt zusätzlich, wie oft Regel 2 einen bestehenden Remote nachicet,
-  bevor sie abbricht (siehe dort)."
+  Ice-Install nötig). Dreistufige Reihenfolge (Breite-vor-Tiefe-Korrektur
+  2026-09-02, aus einer echten Partie: der Bot stapelte 3 Ice auf HQ in Zug
+  1, R&D/Archives blieben unberuehrt, waehrend der Scoring-Remote erst spaet
+  und zufaellig entstand):
+  1. central-zero-ice-needing (Breite): JEDER relevante Zentralserver
+     bekommt zuerst sein erstes Ice.
+  2. remote-ice-target (siehe dort): danach ist der Scoring-Remote
+     wichtiger als ein zweites Ice auf einem schon versorgten Zentralserver
+     -- dort wird gescort, das ist der Sinn des ganzen Spiels.
+  3. central-depth-needing (Tiefe): erst danach werden Zentralserver weiter
+     verstaerkt (CENTRAL-ICE-BASE-DEPTH ohne Breach-Nachweis, darueber nur
+     mit beobachtetem Breach-Druck auf GENAU diesem Server)."
   [view run-history]
-  (or (central-needing-ice view run-history)
-      (when (or (agenda-in-hand? view) (agendas-remaining-in-deck? view))
-        (let [zone (scoring-remote-zone view)]
-          (cond
-            (nil? zone) :new-remote
-            (and (not (remote-has-agenda? view zone))
-                 (not (safe-for-commitment? view zone))
-                 (< (count (server-ices view zone)) MAX-ICE-PER-SCORING-REMOTE))
-            zone)))))
+  (or (central-zero-ice-needing view run-history)
+      (remote-ice-target view)
+      (central-depth-needing view run-history)))
 
 (defn- server-label [target]
   (if (= :new-remote target) "New remote" (legal/server-name target)))
@@ -420,11 +491,27 @@
 (defn- find-legal [legal-actions command pred]
   (first (filter #(and (= command (:command %)) (pred %)) legal-actions)))
 
+(defn- patience-exhausted?
+  "Wartet der Bot schon SCORING-PATIENCE-TURNS Züge oder länger im Stall-
+  Zustand (siehe track-remote-stall!: Remote an der Ice-Obergrenze, Agenda
+  in der Hand, aber weiterhin nicht sicher genug)? Grundlage für den
+  Geduldsgrenze-Bypass in agenda-install-target -- KEIN genereller
+  Sicherheits-Bypass, nur für :tax/safe-for-commitment?, siehe dort."
+  [run-history view]
+  (when-let [{:keys [turn]} (:remote-stall-since @run-history)]
+    (>= (- (get view :turn 0) turn) SCORING-PATIENCE-TURNS)))
+
 (defn- agenda-install-target
-  "Scoring-Fenster-Zielmodell Phase 1: `zone` qualifiziert, wenn :tax UND
-  :credits nicht (mehr) im Gap stecken (scoring-window-gap ohne :agenda --
-  ob eine Agenda tatsächlich installierbar ist, prüft die aufrufende
-  try-install-agenda separat über legal-actions). KEIN Fast-Advance-Bypass
+  "Scoring-Fenster-Zielmodell Phase 1: `zone` qualifiziert, wenn :credits
+  nicht im Gap steckt (credit-ready?) UND entweder :tax nicht im Gap steckt
+  (safe-for-commitment?) ODER die Geduldsgrenze erreicht ist
+  (patience-exhausted?, siehe dort und SCORING-PATIENCE-TURNS -- 'warten ist
+  fuer die Corp die einzige garantiert verlierende Strategie', aus einer
+  echten Partie: :scoring-gap #{:tax} blieb über mehrere Züge unverändert,
+  der Remote war an der Ice-Obergrenze, der Bot klickte bei 20-29 Credits
+  nur noch für Credits, statt die schon gehaltene Agenda zu riskieren). Ob
+  eine Agenda tatsächlich installierbar ist, prüft die aufrufende
+  try-install-agenda separat über legal-actions. KEIN Fast-Advance-Bypass
   mehr (Korrektur 2026-09-02, entfernt): der frühere Phase-2-Bypass nahm
   an, Seamless Launch könne die Agenda NOCH IM SELBEN Zug erreichen —
   unmöglich, place-advancement-counter verlangt eine Karte, die NICHT
@@ -434,20 +521,24 @@
   Ice-Ziel statt der (nicht wählbaren) Agenda. Frühestens NÄCHSTEN Zug ist
   Seamless Launch nutzbar, das deckt bereits der Standard-Risiko-Puffer
   (ASSUMED-RUNNER-INCOME-PER-TURN) ab."
-  [view]
+  [view run-history]
   (when-let [zone (scoring-remote-zone view)]
     (when (and (seq (server-ices view zone))
                (not (remote-has-agenda? view zone))
-               (empty? (disj (scoring-window-gap view zone) :agenda)))
+               (credit-ready? view zone)
+               (or (safe-for-commitment? view zone)
+                   (patience-exhausted? run-history view)))
       zone)))
 
 ;; --- Regel 3: Agenda platzieren ---
 
 (defn- try-install-agenda
-  [view legal-actions]
-  (when-let [zone (agenda-install-target view)]
+  [view legal-actions run-history]
+  (when-let [zone (agenda-install-target view run-history)]
     (when-let [act (first-play-of-type legal-actions "Agenda")]
-      (let [threat (server-threat-for view zone)]
+      (let [threat (server-threat-for view zone)
+            patience? (and (not (safe-for-commitment? view zone))
+                           (patience-exhausted? run-history view))]
         {:action act
          :reason (str "heuristic-corp: Regel 3 (Agenda platzieren) -> " (server-label zone)
                       " estimated-cost=" (:estimated-cost threat)
@@ -455,6 +546,9 @@
                       ", akzeptable Armut=" (* (candidate-agenda-points view) COMMIT-RISK-CREDITS-PER-POINT)
                       ", Rez-Budget " (corp-credit view) ">=" (max-unrezzed-ice-rez-cost view zone)
                       "+" REZ-BUDGET-MARGIN
+                      (when patience?
+                        (str " -- Geduldsgrenze erreicht (SCORING-PATIENCE-TURNS="
+                             SCORING-PATIENCE-TURNS "), installiere trotz unsicherer Taxierung"))
                       " -> installiere " (get-in act [:args :card :title]))}))))
 
 (defn- remaining-advancement [agenda]
@@ -517,10 +611,35 @@
     (when-let [agenda (first (filter agenda-card? (server-content view zone)))]
       (first (filter #(and (= :card (:type %)) (= (:cid agenda) (get-in % [:card :cid]))) options)))))
 
-;; --- Prompt-Routing: Gratis-/Rabatt-Rez- und -Install-Angebote ---
+;; --- Prompt-Routing: Pflicht-Abwurf am Zugende ---
 
 (defn- card-options [options]
   (filter #(= :card (:type %)) options))
+
+(defn- discard-prompt?
+  "Ist `prompt` der Pflicht-Abwurf am Zugende (game.core.turns/
+  handle-end-of-turn-discard, :prompt (str \"Discard down to \" ...))? Am
+  Nachrichtentext erkannt, nicht an der Options-Form -- ein normaler Select-
+  Prompt kann strukturell genauso aussehen (Handkarten + 'Hide'-Button)."
+  [prompt]
+  (str/starts-with? (or (:msg prompt) "") "Discard down to"))
+
+(defn- discard-choice
+  "Wählt aus den Optionen des Pflicht-Abwurf-Prompts die güngstigste
+  Handkarte -- NIEMALS eine Agenda (Bug aus einer echten Partie: der
+  Abwurf-Prompt fiel ungehandelt an den Zufall durch und warf 'Offworld
+  Office', eine Agenda, ab -- das erklärt, warum über zwei Partien nie eine
+  Agenda installiert wurde). Bewertung analog zu HAND-CARD-DISCARD-COST
+  (Asset/Upgrade teurer als Ice/Operation zu verlieren). nil, wenn außer
+  Agenden nichts zur Auswahl steht (z.B. eine überfüllte Hand aus
+  ausschließlich Agenden) -- dann bleibt nur der Zufalls-Fallback, sichtbar
+  im Log markiert (siehe random-fallback-with-log)."
+  [options]
+  (let [cands (remove #(agenda-card? (:card %)) (card-options options))]
+    (when (seq cands)
+      (apply min-key #(get HAND-CARD-DISCARD-COST (:type (:card %)) 2) cands))))
+
+;; --- Prompt-Routing: Gratis-/Rabatt-Rez- und -Install-Angebote ---
 
 (defn- rez-offer-choice
   "Wählt aus den Optionen eines Select-Prompts das teuerste bereits
@@ -669,7 +788,7 @@
   [view card run-history]
   (case (:type card)
     "ICE" (some-> (ice-install-target view run-history) server-label)
-    "Agenda" (some-> (agenda-install-target view) server-label)
+    "Agenda" (some-> (agenda-install-target view run-history) server-label)
     "Asset" (when (contains? ECON-ASSET-CARDS (:title card)) "New remote")
     nil))
 
@@ -738,6 +857,29 @@
                (not (and (= last-run-phase :movement) (= last-run-server zone))))
       (swap! run-history update :breaches (fnil conj []) {:zone zone :turn turn}))
     (swap! run-history assoc :last-run-phase phase :last-run-server zone)))
+
+(defn- track-remote-stall!
+  "Aktualisiert `run-history` bei JEDEM decide-Aufruf mit dem Stall-Zustand
+  des Scoring-Remotes: Ice-Obergrenze erreicht (MAX-ICE-PER-SCORING-REMOTE),
+  weiterhin nicht sicher genug (safe-for-commitment?), Agenda liegt in der
+  Hand. Merkt sich den ERSTEN Zug, in dem dieser Zustand beobachtet wurde
+  (:remote-stall-since) -- patience-exhausted? vergleicht das gegen den
+  aktuellen Zug. Wechselt der Remote (anderer zone-Wert) oder verlässt der
+  Stall-Zustand, wird der Zähler zurückgesetzt: die Geduldsgrenze bezieht
+  sich auf EINEN konkreten, andauernden Stall, nicht auf die Partie
+  insgesamt."
+  [run-history view]
+  (let [zone (scoring-remote-zone view)
+        turn (get view :turn 0)
+        stalled? (and zone
+                      (not (remote-has-agenda? view zone))
+                      (agenda-in-hand? view)
+                      (>= (count (server-ices view zone)) MAX-ICE-PER-SCORING-REMOTE)
+                      (not (safe-for-commitment? view zone)))]
+    (if stalled?
+      (swap! run-history update :remote-stall-since
+             (fn [m] (if (and m (= (:zone m) zone)) m {:zone zone :turn turn})))
+      (swap! run-history dissoc :remote-stall-since))))
 
 ;; --- Bot ---
 
@@ -822,6 +964,7 @@
   bp/Bot
   (decide [_ view legal-actions]
     (track-run-progress! run-history view)
+    (track-remote-stall! run-history view)
     (let [decision (if (:run view)
                      (rez-decision view legal-actions)
                      ;; try-score-line ZUERST (Korrektur 2026-09-02): eine
@@ -831,7 +974,7 @@
                      ;; ganzer Züge lang (in einer echten Partie bestätigt).
                      (or (try-score-line view legal-actions)
                          (try-install-ice view legal-actions run-history)
-                         (try-install-agenda view legal-actions)
+                         (try-install-agenda view legal-actions run-history)
                          (try-draw-for-scoring-window view legal-actions)
                          (try-econ view legal-actions)
                          {:action (first legal-actions)
@@ -850,7 +993,14 @@
             (choose-by-label options label
                               (str "heuristic-corp: Server-Wahl fuer " (:title (:card prompt)) " -> " label)))
           (when (= :select (:prompt-type prompt))
-            (or (when-let [opt (select-seamless-target view options)]
+            (or (when (discard-prompt? prompt)
+                  (when-let [opt (discard-choice options)]
+                    {:option opt
+                     :reason (str "heuristic-corp: Regel (Pflicht-Abwurf) -> " (:label opt)
+                                  " (Typ=" (:type (:card opt)) ", Kosten="
+                                  (get HAND-CARD-DISCARD-COST (:type (:card opt)) 2)
+                                  ", Agenden nie abgeworfen)")}))
+                (when-let [opt (select-seamless-target view options)]
                   {:option opt :reason (str "heuristic-corp: Seamless-Launch-Ziel -> " (:label opt))})
                 (when-let [opt (rez-offer-choice options)]
                   {:option opt :reason (str "heuristic-corp: Regel (Gratis-/Rabatt-Rez-Angebot) -> "
@@ -864,9 +1014,10 @@
   "Baut einen seedbaren Heuristik-Corp-Bot. `seed` steuert nur den
   eingebetteten Random-Delegate (für Prompts/Fallbacks ohne eigene Regel) —
   das Playbook selbst ist deterministisch. `run-history` ist rein interner
-  Bot-State (Breach-Zähler pro Zentralserver, siehe track-run-progress!) --
-  kein Zugriff auf rohen Engine-State, nur Buchführung über ohnehin per view
-  gesehene Werte."
+  Bot-State (Breach-Zähler pro Zentralserver, siehe track-run-progress!;
+  Scoring-Remote-Stall-Zeitpunkt für die Geduldsgrenze, siehe
+  track-remote-stall!) -- kein Zugriff auf rohen Engine-State, nur
+  Buchführung über ohnehin per view gesehene Werte."
   [seed]
   (->HeuristicCorpBot (random/random-bot seed)
                       (atom {:breaches [] :last-run-phase nil :last-run-server nil})))

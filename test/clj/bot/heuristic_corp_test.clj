@@ -152,6 +152,51 @@
       (is (str/includes? (:reason decision) "kein Playbook-Handler")
           "kein Bedarf -> kein gezielter Griff, sichtbar an den Zufall delegiert"))))
 
+(deftest pflicht-abwurf-wirft-nie-eine-agenda-ab
+  ;; Bug aus einer echten Partie (zweite Partie): der Pflicht-Abwurf-Prompt
+  ;; am Zugende (game.core.turns/handle-end-of-turn-discard) fiel ungehandelt
+  ;; an den Zufall durch und warf "Offworld Office", eine Agenda, ab -- ueber
+  ;; zwei Partien wurde dadurch nie eine Agenda installiert. discard-choice
+  ;; routet den Prompt jetzt ueber das Playbook: nie eine Agenda, guenstigste
+  ;; Nicht-Agenda-Karte (HAND-CARD-DISCARD-COST) zuerst.
+  (do-game
+    (new-game {:corp {:hand ["Hostile Takeover" "Regolith Mining License" "Ice Wall"] :credits 20}})
+    (core/resolve-ability
+     state :corp
+     {:prompt "Discard down to 2 cards"
+      :choices {:card core/in-hand? :max 1 :all true}
+      :effect (fn [_ _ _ _ _])}
+     (get-in @state [:corp :identity]) nil)
+    (let [bot (hc/heuristic-corp-bot 1)
+          v (view/view-for state :corp)
+          prompt (get-in v [:corp :prompt-state])
+          options (legal/prompt-options v :corp)
+          decision (bp/on-prompt bot v prompt options)]
+      (is (not= "Hostile Takeover" (:label (:option decision)))
+          "Agenda darf nie zum Abwurf gewaehlt werden")
+      (is (= "Ice Wall" (:label (:option decision)))
+          "guenstigste Nicht-Agenda-Karte (ICE, Kosten 1) statt Regolith Mining License (Asset, Kosten 5)"))))
+
+(deftest pflicht-abwurf-faellt-sichtbar-an-den-zufall-wenn-nur-agenden-zur-wahl-stehen
+  ;; Randfall: steht ausschliesslich eine Agenda zur Wahl (Hand voller
+  ;; Agenden), gibt discard-choice nil zurueck -- kein Verbot, das den Bot
+  ;; blockiert, sondern ein sichtbar markierter Zufalls-Fallback.
+  (do-game
+    (new-game {:corp {:hand ["Hostile Takeover" "Hostile Takeover"] :credits 20}})
+    (core/resolve-ability
+     state :corp
+     {:prompt "Discard down to 1 cards"
+      :choices {:card core/in-hand? :max 1 :all true}
+      :effect (fn [_ _ _ _ _])}
+     (get-in @state [:corp :identity]) nil)
+    (let [bot (hc/heuristic-corp-bot 1)
+          v (view/view-for state :corp)
+          prompt (get-in v [:corp :prompt-state])
+          options (legal/prompt-options v :corp)
+          decision (bp/on-prompt bot v prompt options)]
+      (is (str/includes? (:reason decision) "kein Playbook-Handler")
+          "nur Agenden zur Wahl -- kein gezielter Griff, sichtbar an den Zufall delegiert"))))
+
 (deftest regel-1-zentralserver-icen-prioritaet-hq
   (do-game
     (new-game {:corp {:hand ["Ice Wall"] :credits 10}})
@@ -188,14 +233,14 @@
           (is (str/includes? (:reason decision) "R&D")
               "HQ (Ice Wall, Kosten 2) gilt bei Einkommensannahme 1 schon als ausreichend -> naechstes Ziel ist R&D"))))))
 
-(deftest regel-1-ein-einzelnes-billiges-ice-reicht-nicht
-  ;; Kern der Diagnose aus der gespielten Partie: Tithe (Staerke 1, Rez-
-  ;; Kosten 1) taxiert nur raw-ice-cost(1,0)=max(1,2)=2 -- unter
-  ;; MIN-CENTRAL-TAX-CREDITS (5). HQ galt frueher ("hat >=1 Ice") sofort als
-  ;; fertig; jetzt muss Regel 1 ein ZWEITES Ice auf HQ legen, weil die
-  ;; Taxierung noch zu niedrig ist -- R&D/Archives bleiben unberuehrt (die
-  ;; Breach-Prioritaet ist hier noch bei 0/0, HQ bleibt an erster Stelle
-  ;; der Basis-Reihenfolge).
+(deftest regel-1-breite-vor-tiefe-rd-vor-zweitem-hq-ice
+  ;; Breite-vor-Tiefe-Korrektur (2026-09-02, aus der zweiten gespielten
+  ;; Partie: Palisade+Whitespace+Diviner alle in Zug 1 auf HQ, R&D/Archives
+  ;; blieben unberuehrt). Tithe (Staerke 1, Rez-Kosten 1) taxiert HQ nur
+  ;; unzureichend, ABER R&D hat noch GAR KEIN Ice -- Regel 1 muss jetzt
+  ;; zuerst R&D sein erstes Ice geben (Breite), statt HQ sofort ein zweites
+  ;; zu spendieren (Tiefe). Frueher (central-needing-ice ohne Breite/Tiefe-
+  ;; Trennung) waere hier faelschlich ein zweites Ice auf HQ gelegt worden.
   (do-game
     (new-game {:corp {:hand ["Tithe" "Ice Wall"] :credits 20}})
     (play-from-hand state :corp "Tithe" "HQ")
@@ -204,12 +249,45 @@
           v (view/view-for state :corp)
           actions (legal/turn-actions v :corp)
           decision (bp/decide bot v actions)]
+      (is (str/includes? (:reason decision) "R&D")
+          "HQ hat schon Ice (wenn auch unzureichend), R&D noch gar keins -> Breite zuerst")
+      (game-runner/decide-one! {:state state :side :corp :kind :action :bot bot})
+      (game-runner/decide-one! {:state state :side :corp :kind :prompt :bot bot})
+      (is (= 1 (count (get-ice state :hq)))
+          "kein zweites Ice auf HQ, solange R&D noch gar keins hat")
+      (is (= 1 (count (get-ice state :rd)))))))
+
+(deftest regel-1-tiefe-nach-breite-zweites-ice-auf-hq
+  ;; Fortsetzung des obigen Falls: HABEN HQ und R&D beide schon je ein Ice
+  ;; (Breite abgeschlossen), ist Tithe auf HQ allein weiterhin unzureichend
+  ;; -- jetzt DARF Regel 1 ein zweites Ice auf HQ legen (Tiefe), innerhalb
+  ;; von CENTRAL-ICE-BASE-DEPTH, ganz ohne beobachteten Breach. Alle Agenda-
+  ;; Kopien schon beim Runner gestohlen (ALLE 7 laut TOTAL-AGENDA-COPIES-IN-
+  ;; DECK, im Runner-Score-Area, NICHT im Corp-Discard -- sonst wuerde
+  ;; archives-has-agenda? Archives selbst zum Breite-Ziel machen) -- KEIN
+  ;; Remote-Vorbau-Anspruch mehr, sonst wuerde Regel 2 (jetzt hoeher
+  ;; priorisiert als Zentralserver-Tiefe) den Test verfaelschen, indem sie
+  ;; einen neuen Remote statt des zweiten HQ-Ice waehlt.
+  (do-game
+    (new-game {:corp {:hand ["Tithe" "Ice Wall" "Ice Wall"] :credits 20}
+               :runner {:score-area ["Offworld Office" "Offworld Office" "Offworld Office"
+                                      "Send a Message" "Send a Message"
+                                      "Superconducting Hub" "Superconducting Hub"]}})
+    (play-from-hand state :corp "Tithe" "HQ")
+    (rez state :corp (get-ice state :hq 0))
+    (play-from-hand state :corp "Ice Wall" "R&D")
+    (rez state :corp (get-ice state :rd 0))
+    (let [bot (hc/heuristic-corp-bot 1)
+          v (view/view-for state :corp)
+          actions (legal/turn-actions v :corp)
+          decision (bp/decide bot v actions)]
       (is (str/includes? (:reason decision) "Regel 1")
-          "HQ gilt trotz vorhandenem Tithe noch als unzureichend taxiert")
+          "HQ+R&D beide schon je ein Ice -- Breite abgeschlossen")
       (game-runner/decide-one! {:state state :side :corp :kind :action :bot bot})
       (game-runner/decide-one! {:state state :side :corp :kind :prompt :bot bot})
       (is (= 2 (count (get-ice state :hq)))
-          "zweites Ice auf HQ, nicht auf R&D/Archives -- ein Tithe allein reicht nicht"))))
+          "Breite abgeschlossen -> Tiefe: HQ zuerst laut Basis-Prioritaet")
+      (is (= 1 (count (get-ice state :rd)))))))
 
 (deftest regel-1-archives-ohne-agenda-braucht-keine-taxierung
   ;; Echtes Netrunner-Regel: ein Zugriff auf ein agendafreies Archiv kostet
@@ -430,6 +508,58 @@
       (game-runner/decide-one! {:state state :side :corp :kind :action :bot bot})
       (is (empty? (get-content state :remote1))
           "Seamless Launch in der Hand darf die Sicherheitsfrage nicht mehr uebergehen"))))
+
+(deftest regel-3-geduldsgrenze-installiert-trotz-anhaltender-unsicherheit
+  ;; Totlauf-Fix (2026-09-02, aus der zweiten Partie: :scoring-gap #{:tax}
+  ;; blieb ueber mehrere Zuege unveraendert, der Bot klickte bei 20-29
+  ;; Credits nur noch fuer Credits, ohne die schon gehaltene Agenda zu
+  ;; riskieren). Remote an der Ice-Obergrenze (3x Ice Wall, einzeln zu
+  ;; schwach), Runner hat viele Credits -> bleibt dauerhaft unsicher
+  ;; (safe-for-commitment? bleibt false). run-history direkt mit einem
+  ;; SCORING-PATIENCE-TURNS Zuege alten Stall-Zeitpunkt konstruiert (wie
+  ;; regel-1-breach-zaehler-uebersteuert-basis-prioritaet oben) -- die
+  ;; Geduldsgrenze installiert die Agenda trotzdem.
+  (do-game
+    (new-game {:corp {:hand ["Priority Requisition" "Ice Wall" "Ice Wall" "Ice Wall"]
+                      :credits 20}
+               :runner {:credits 20}})
+    (core/gain state :corp :click 10)
+    (play-from-hand state :corp "Ice Wall" "New remote")
+    (play-from-hand state :corp "Ice Wall" "Server 1")
+    (play-from-hand state :corp "Ice Wall" "Server 1")
+    (is (= 3 (count (get-ice state :remote1))) "Testaufbau: Ice-Obergrenze erreicht")
+    (let [current-turn (:turn (view/view-for state :corp) 0)
+          run-history (atom {:breaches [] :last-run-phase nil :last-run-server nil
+                             :remote-stall-since {:zone :remote1
+                                                   :turn (- current-turn hc/SCORING-PATIENCE-TURNS)}})
+          bot (hc/->HeuristicCorpBot (random/random-bot 1) run-history)]
+      (game-runner/decide-one! {:state state :side :corp :kind :action :bot bot})
+      (game-runner/decide-one! {:state state :side :corp :kind :prompt :bot bot})
+      (is (= "Priority Requisition" (:title (get-content state :remote1 0)))
+          "Geduldsgrenze erreicht -> Agenda installiert, trotz anhaltend unsicherer Taxierung"))))
+
+(deftest regel-3-geduldsgrenze-noch-nicht-erreicht-kein-vorzeitiger-install
+  ;; Gegenprobe: derselbe Stall-Zustand, aber erst SCORING-PATIENCE-TURNS
+  ;; minus 1 Zuege alt -- die Geduldsgrenze greift noch nicht, Regel 3
+  ;; installiert nicht, Regel 2 (weiteres Ice) kann auch nicht mehr (Ober-
+  ;; grenze erreicht) -- der Bot weicht auf Econ aus, installiert aber
+  ;; keinesfalls die Agenda vorzeitig.
+  (do-game
+    (new-game {:corp {:hand ["Priority Requisition" "Ice Wall" "Ice Wall" "Ice Wall"]
+                      :credits 20}
+               :runner {:credits 20}})
+    (core/gain state :corp :click 10)
+    (play-from-hand state :corp "Ice Wall" "New remote")
+    (play-from-hand state :corp "Ice Wall" "Server 1")
+    (play-from-hand state :corp "Ice Wall" "Server 1")
+    (let [current-turn (:turn (view/view-for state :corp) 0)
+          run-history (atom {:breaches [] :last-run-phase nil :last-run-server nil
+                             :remote-stall-since {:zone :remote1
+                                                   :turn (- current-turn (dec hc/SCORING-PATIENCE-TURNS))}})
+          bot (hc/->HeuristicCorpBot (random/random-bot 1) run-history)]
+      (game-runner/decide-one! {:state state :side :corp :kind :action :bot bot})
+      (is (empty? (get-content state :remote1))
+          "Geduldsgrenze noch nicht erreicht -> keine vorzeitige Agenda-Installation"))))
 
 (deftest regel-2-5-ziehen-hoch-priorisiert-wenn-nur-agenda-fehlt
   ;; Ergaenzung aus der Gap-Statistik (2026-09-02): scheitert das Scoring-
