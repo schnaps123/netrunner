@@ -90,6 +90,15 @@
   zweistufige Zurückhaltung, die sich dem Sicherheitsboden annähert."
   10)
 
+(def PLENTY-CREDITS
+  "Ab diesem Corp-Credit-Stand ist Ziehen (Regel 5.5) einem weiteren
+  generischen 1-Credit-Klick (Regel 5.6) vorzuziehen -- ein Credit, den
+  der Bot absehbar nicht braucht, ist schlechter investiert als eine neue
+  Karte. Siehe should-draw?-Docstring für die Wiedereinführungs-Begründung
+  (2026-09-02, aus einer echten Partie: 13-16 Credits, wiederholtes
+  Klicken statt Ziehen/Vorbauen)."
+  12)
+
 (def AGENDA-SEARCH-VALUE
   "Näherungswert, wie viel gezieltes Graben nach der fehlenden Agenda
   (Regel 2.5) wert ist, wenn die Hand schon an/über der Maximalgröße liegt
@@ -113,11 +122,15 @@
   {"Asset" 5 "Upgrade" 4 "ICE" 1 "Operation" 1})
 
 (def TOTAL-AGENDA-COPIES-IN-DECK
-  "Agenda-Kopien in bot.cards/gateway-corp (Offworld Office x3, Send a
-  Message x2) -- fest, weil der Bot ausschließlich dieses eine Deck spielt
-  (YAGNI, wie MULLIGAN-ECON-CARDS). Für 'stecken laut Decklist noch Agenden
-  im Rest-Deck?' (Regel 2 Vorbau-Gate, siehe agendas-remaining-in-deck?)."
-  5)
+  "Agenda-Kopien in bot.cards/gateway-corp -- Offworld Office x3 (2 Punkte),
+  Send a Message x2 (3 Punkte), Superconducting Hub x2 (2 Punkte) = 7.
+  Korrektur 2026-09-02: Superconducting Hub wurde zunächst übersehen
+  (klingt wie ein Asset, ist aber laut Kartendaten :type \"Agenda\") -- der
+  alte Wert (5) ließ agendas-remaining-in-deck? zu früh 'keine mehr' melden.
+  Fest, weil der Bot ausschließlich dieses eine Deck spielt (YAGNI, wie
+  MULLIGAN-ECON-CARDS). Für 'stecken laut Decklist noch Agenden im
+  Rest-Deck?' (Regel 2 Vorbau-Gate, siehe agendas-remaining-in-deck?)."
+  7)
 
 (def DEFAULT-AGENDA-POINTS
   "Fallback-Agenda-Punktwert für commitment-worth-it? (siehe dort), wenn
@@ -407,58 +420,42 @@
 (defn- find-legal [legal-actions command pred]
   (first (filter #(and (= command (:command %)) (pred %)) legal-actions)))
 
-(defn- fast-advance-line-available?
-  "Ist beim JETZIGEN Install schon eine Score-Linie mit minimaler
-  Exposition absehbar (Seamless Launch in der Hand, Restadvancement der
-  Kandidaten-Agenda passt in die nach dem Install diesen Zug noch
-  verfügbaren Klicks + Seamless-Bonus)? Dann ist die Agenda nur eine
-  Runner-Runde (oder weniger) lang exponiert -- Taxierung/Commitment-
-  Risiko spielt dann kaum eine Rolle. Wendet dieselbe Deadline-Logik wie
-  try-score-line (Regel 4) an, aber VOR dem Install auf die Kandidaten-
-  Agenda, statt erst danach auf eine schon installierte -- Design-Spec
-  Scoring-Fenster-Zielmodell, Phase 2: die Prüfung gehört an die Install-
-  Entscheidung, nicht erst ans Scoren."
-  [view legal-actions]
-  (when-let [agenda (first (filter agenda-card? (corp-hand view)))]
-    (when-let [seamless-act (first-play-of-titles legal-actions #{"Seamless Launch"})]
-      (let [clicks-after-install (max 0 (dec (get-in view [:corp :click] 0)))
-            requirement (or (:current-advancement-requirement agenda)
-                            (:advancementcost agenda) 0)]
-        (<= requirement (+ clicks-after-install 2))))))
-
 (defn- agenda-install-target
-  "Scoring-Fenster-Zielmodell Phase 1+2: `zone` qualifiziert, wenn EINE
-  Fast-Advance-Linie ansteht (fast-advance?, deren minimale Exposition
-  Sicherheitsfragen ohnehin irrelevant macht) ODER :tax UND :credits nicht
-  (mehr) im Gap stecken (scoring-window-gap ohne :agenda -- ob eine Agenda
-  tatsächlich installierbar ist, prüft die aufrufende try-install-agenda
-  separat über legal-actions)."
-  [view fast-advance?]
+  "Scoring-Fenster-Zielmodell Phase 1: `zone` qualifiziert, wenn :tax UND
+  :credits nicht (mehr) im Gap stecken (scoring-window-gap ohne :agenda --
+  ob eine Agenda tatsächlich installierbar ist, prüft die aufrufende
+  try-install-agenda separat über legal-actions). KEIN Fast-Advance-Bypass
+  mehr (Korrektur 2026-09-02, entfernt): der frühere Phase-2-Bypass nahm
+  an, Seamless Launch könne die Agenda NOCH IM SELBEN Zug erreichen —
+  unmöglich, place-advancement-counter verlangt eine Karte, die NICHT
+  diesen Zug installiert wurde (siehe try-score-line). Eine echte
+  Spielpartie zeigte den Schaden: der Bypass ließ eine unsichere Agenda
+  installieren, Seamless Launch landete danach zufällig auf einem
+  Ice-Ziel statt der (nicht wählbaren) Agenda. Frühestens NÄCHSTEN Zug ist
+  Seamless Launch nutzbar, das deckt bereits der Standard-Risiko-Puffer
+  (ASSUMED-RUNNER-INCOME-PER-TURN) ab."
+  [view]
   (when-let [zone (scoring-remote-zone view)]
     (when (and (seq (server-ices view zone))
                (not (remote-has-agenda? view zone))
-               (or fast-advance?
-                   (empty? (disj (scoring-window-gap view zone) :agenda))))
+               (empty? (disj (scoring-window-gap view zone) :agenda)))
       zone)))
 
 ;; --- Regel 3: Agenda platzieren ---
 
 (defn- try-install-agenda
   [view legal-actions]
-  (let [fast-advance? (fast-advance-line-available? view legal-actions)]
-    (when-let [zone (agenda-install-target view fast-advance?)]
-      (when-let [act (first-play-of-type legal-actions "Agenda")]
-        (let [threat (server-threat-for view zone)]
-          {:action act
-           :reason (str "heuristic-corp: Regel 3 (Agenda platzieren) -> " (server-label zone)
-                        (if fast-advance?
-                          " Fast-Advance-Linie absehbar (Seamless Launch, minimale Exposition) -> Sicherheitsfrage übergangen"
-                          (str " estimated-cost=" (:estimated-cost threat)
-                               ", Runner-Budget=" (+ (runner-credit view) ASSUMED-RUNNER-INCOME-PER-TURN)
-                               ", akzeptable Armut=" (* (candidate-agenda-points view) COMMIT-RISK-CREDITS-PER-POINT)
-                               ", Rez-Budget " (corp-credit view) ">=" (max-unrezzed-ice-rez-cost view zone)
-                               "+" REZ-BUDGET-MARGIN))
-                        " -> installiere " (get-in act [:args :card :title]))})))))
+  (when-let [zone (agenda-install-target view)]
+    (when-let [act (first-play-of-type legal-actions "Agenda")]
+      (let [threat (server-threat-for view zone)]
+        {:action act
+         :reason (str "heuristic-corp: Regel 3 (Agenda platzieren) -> " (server-label zone)
+                      " estimated-cost=" (:estimated-cost threat)
+                      ", Runner-Budget=" (+ (runner-credit view) ASSUMED-RUNNER-INCOME-PER-TURN)
+                      ", akzeptable Armut=" (* (candidate-agenda-points view) COMMIT-RISK-CREDITS-PER-POINT)
+                      ", Rez-Budget " (corp-credit view) ">=" (max-unrezzed-ice-rez-cost view zone)
+                      "+" REZ-BUDGET-MARGIN
+                      " -> installiere " (get-in act [:args :card :title]))}))))
 
 (defn- remaining-advancement [agenda]
   (- (or (:current-advancement-requirement agenda) 0)
@@ -467,6 +464,13 @@
 ;; --- Regel 4: Scoren ---
 
 (defn- try-score-line
+  "KEIN Sicherheits-Rueckzieher mehr auf advance-act (Korrektur 2026-09-02):
+  einmal installiert, ist die Verpflichtung schon eingegangen (try-install-
+  agenda hat sie vorher geprueft) -- eine liegende, unfertige Agenda ist
+  die riskanteste Position im ganzen Spiel, ein erneuter Sicherheits-Check
+  wuerde nur dazu fuehren, dass sie halbfertig liegen bleibt, statt fertig
+  zu werden. Solange advance-act legal ist (Engine prueft Bezahlbarkeit:
+  1 Klick + 1 Credit pro Advance), wird weiter advanced."
   [view legal-actions]
   (when-let [zone (scoring-remote-zone view)]
     (when (remote-has-agenda? view zone)
@@ -475,36 +479,35 @@
             remaining (remaining-advancement agenda)
             score-act (find-legal legal-actions "score" #(= (:title agenda) (get-in % [:args :card :title])))
             advance-act (find-legal legal-actions "advance" #(= (:title agenda) (get-in % [:args :card :title])))
-            seamless-act (first-play-of-titles legal-actions #{"Seamless Launch"})]
+            ;; place-advancement-counter (Seamless Launch) verlangt eine
+            ;; Karte, die NICHT diesen Zug installiert wurde -- sonst landet
+            ;; Seamless Launch mangels gueltigem Ziel zufaellig auf einer
+            ;; ANDEREN installierten Karte (siehe agenda-install-target-
+            ;; Korrektur, aus einer echten Partie bestaetigt).
+            seamless-eligible? (not= :this-turn (:installed agenda))
+            seamless-act (when seamless-eligible?
+                          ;; seamless-act wird per Titel gesucht (first-play-of-titles),
+                          ;; nicht per "erste spielbare Operation" -- sonst gewinnt eine
+                          ;; frueher in der Hand liegende Operation (z.B. Hedge Fund) das
+                          ;; Matching und die Score-Linie wird faelschlich uebersprungen.
+                          (first-play-of-titles legal-actions #{"Seamless Launch"}))]
         (cond
           score-act
           {:action score-act
            :reason (str "heuristic-corp: Regel 4 (Scoren) -> " (:title agenda) " ist fertig advanced, score")}
 
-          ;; Deadline-Score-Linie geht der Sicherheitspruefung vor: ist das
-          ;; Restadvancement diesen Zug per Seamless Launch abschliessbar,
-          ;; wird geschlossen, unabhaengig davon, ob der Server nach der
-          ;; Sicherheitsheuristik "sicher" waere (z.B. noch kein Ice im
-          ;; Remote -- estimated-cost 0 gilt sonst immer als unsicher). Nur
-          ;; das offene, mehrzuegige Normal-Advancen unten bleibt sicherheits-
-          ;; gated (siehe ASSUMED-RUNNER-INCOME-PER-TURN-Kommentar).
-          ;; seamless-act wird per Titel gesucht (first-play-of-titles), nicht
-          ;; per "erste spielbare Operation" -- sonst gewinnt eine frueher in
-          ;; der Hand liegende Operation (z.B. Hedge Fund) das Matching und
-          ;; die Score-Linie wird faelschlich uebersprungen.
           (and (<= remaining (+ clicks 2))
                seamless-act)
           {:action seamless-act
            :reason (str "heuristic-corp: Regel 4 (Score-Linie) -> Seamless Launch auf "
                         (:title agenda) ", Restadvancement=" remaining " <= Klicks(" clicks ")+2")}
 
-          (not (safe-for-commitment? view zone (or (:agendapoints agenda) DEFAULT-AGENDA-POINTS)))
-          nil
-
           advance-act
           {:action advance-act
            :reason (str "heuristic-corp: Regel 4 (weiter advancen) -> " (:title agenda)
-                        " Restadvancement=" remaining)})))))
+                        " Restadvancement=" remaining
+                        (when-not seamless-eligible?
+                          " (Seamless Launch heute nicht nutzbar -- erst naechsten Zug installiert)"))})))))
 
 ;; --- Prompt-Routing: Seamless-Launch-Ziel ---
 
@@ -513,6 +516,56 @@
   (when-let [zone (scoring-remote-zone view)]
     (when-let [agenda (first (filter agenda-card? (server-content view zone)))]
       (first (filter #(and (= :card (:type %)) (= (:cid agenda) (get-in % [:card :cid]))) options)))))
+
+;; --- Prompt-Routing: Gratis-/Rabatt-Rez- und -Install-Angebote ---
+
+(defn- card-options [options]
+  (filter #(= :card (:type %)) options))
+
+(defn- rez-offer-choice
+  "Wählt aus den Optionen eines Select-Prompts das teuerste bereits
+  installierte, unrezzte eigene Ice -- für Gratis-/Rabatt-Rez-Angebote
+  (z.B. Send a Message :stolen/:on-score: 'rez an ice, ignoring all
+  costs'; eine echte Spielpartie zeigte, dass so ein Angebot bisher
+  ungenutzt an random-delegate durchfiel und abgelehnt wurde). Strukturell
+  erkannt (installiert + unrezzt + Ice-Typ), nicht am Prompt-Text -- robust
+  auch, wenn ein Angebot zusätzlich andere Optionen mitbringt. nil, wenn
+  keine passende Karte unter den Optionen ist."
+  [options]
+  (let [rezzable (filter #(let [c (:card %)]
+                            (and (= "ICE" (:type c)) (:installed c) (not (:rezzed c))))
+                         (card-options options))]
+    (when (seq rezzable)
+      (apply max-key #(or (:cost (:card %)) 0) rezzable))))
+
+(defn- free-install-offer-choice
+  "Wählt aus den Optionen eines Select-Prompts ein Ice zum Gratis-/Rabatt-
+  Install (z.B. Brân 1.0: 'install an ice from HQ or Archives'). Greift
+  NUR, wenn laut Regel 1/2 ohnehin Bedarf besteht (central-needing-ice
+  bzw. ein noch unsicherer, unter der Ice-Obergrenze liegender Scoring-
+  Remote) -- ein Gratis-Install ohne Verwendungszweck ist kein Gewinn.
+  Filtert defensiv auf Ice-Typ-Optionen, unabhängig davon, ob der Prompt
+  (bot.legal-Fallback ohne :selectable von der Engine, siehe dort)
+  zusätzlich fachfremde Optionen mitbringt."
+  [view run-history options]
+  (let [ice-opts (filter #(= "ICE" (:type (:card %))) (card-options options))
+        remote-needs-ice? (when-let [zone (scoring-remote-zone view)]
+                            (and (not (remote-has-agenda? view zone))
+                                 (not (safe-for-commitment? view zone))
+                                 (< (count (server-ices view zone)) MAX-ICE-PER-SCORING-REMOTE)))]
+    (when (and (seq ice-opts) (or (central-needing-ice view run-history) remote-needs-ice?))
+      (first ice-opts))))
+
+(defn- random-fallback-with-log
+  "Delegiert an random-delegate, hängt aber eine sichtbare Markierung an
+  den Reason-String -- 'kein Regel-Handler fuer diesen Prompt-Typ' soll im
+  Decision-Log auffallen, statt unmarkiert als 'random-bot: ...'
+  durchzurutschen (Ergänzung aus einer echten Partie: mehrere Select-
+  Prompts fielen unbemerkt an den Zufall durch, weil nichts das anzeigte)."
+  [random-delegate view prompt options]
+  (update (bp/on-prompt random-delegate view prompt options)
+          :reason #(str "heuristic-corp: Regel 6 (kein Playbook-Handler fuer "
+                        (name (:prompt-type prompt)) "-Prompt) -> " %)))
 
 ;; --- Regel 5: Econ ---
 
@@ -566,17 +619,28 @@
   3. Ab DECK-CAUTION-THRESHOLD aufwärts: normal, 'keine Agenda' ODER dünne
      Hand lösen Ziehen aus.
 
-  'Reichlich Credits' und 'kein Ice in der Hand' sind BEWUSST keine
-  eigenständigen Auslöser (Korrektur 2026-09-02 bzw. Regression vom
-  2026-09-02): reich sein ist kein Ziehen-Grund, und das Gateway-Deck hat
-  nur 16 von 34 Ice-Karten -- 'kein Ice' wird spätestens ab Mitte der
-  Partie dauerhaft wahr und triggerte vorher praktisch endloses Ziehen."
+  'Kein Ice in der Hand' ist BEWUSST kein eigenständiger Auslöser
+  (Regression vom 2026-09-02): das Gateway-Deck hat nur 16 von 34
+  Ice-Karten -- diese Bedingung wird spätestens ab Mitte der Partie
+  dauerhaft wahr und triggerte vorher praktisch endloses Ziehen.
+
+  'Reichlich Credits' (PLENTY-CREDITS) WURDE entfernt (Korrektur
+  2026-09-02: 'reich sein ist kein Ziehen-Grund'), aber aus einer echten
+  Partie mit anderer Begründung WIEDER aufgenommen: dort klickte der Bot
+  bei 13-16 Credits (weit über jedem absehbaren Bedarf) wiederholt für
+  einen einzelnen Credit, obwohl nichts Produktives mehr griff -- kein
+  Widerspruch zur früheren Entfernung, weil Regel 5.5 strukturell schon
+  IMMER hinter allen produktiveren Regeln (1-4, 5.1-5.4, 2.5) steht: dieser
+  Auslöser konkurriert nur noch gegen den reinen Credit-Klick (Regel 5.6),
+  nie gegen eine wichtigere Priorität. Ein ungebrauchter Credit ist
+  schlechter als eine neue Karte."
   [view]
   (let [dc (deck-count view)]
     (and (> dc DRAW-SAFETY-BUFFER)
          (or (<= (hand-size view) HAND-SIZE-LOW)
              (and (>= dc DECK-CAUTION-THRESHOLD)
-                  (not (agenda-in-hand? view)))))))
+                  (or (not (agenda-in-hand? view))
+                      (>= (corp-credit view) PLENTY-CREDITS)))))))
 
 (defn- try-draw
   [view legal-actions]
@@ -605,10 +669,7 @@
   [view card run-history]
   (case (:type card)
     "ICE" (some-> (ice-install-target view run-history) server-label)
-    ;; fast-advance? hier immer true: die Gate-Entscheidung ist schon in
-    ;; try-install-agenda gefallen (das legal-actions hat), dieser Aufruf
-    ;; dient nur noch der Server-Wahl-Routing für den Folge-Prompt.
-    "Agenda" (some-> (agenda-install-target view true) server-label)
+    "Agenda" (some-> (agenda-install-target view) server-label)
     "Asset" (when (contains? ECON-ASSET-CARDS (:title card)) "New remote")
     nil))
 
@@ -763,9 +824,14 @@
     (track-run-progress! run-history view)
     (let [decision (if (:run view)
                      (rez-decision view legal-actions)
-                     (or (try-install-ice view legal-actions run-history)
+                     ;; try-score-line ZUERST (Korrektur 2026-09-02): eine
+                     ;; liegende, unfertige Agenda ist die riskanteste
+                     ;; Position im Spiel -- Fertigstellen schlägt neues
+                     ;; Ice bauen, sonst blockiert Regel 1/2 das Advancen
+                     ;; ganzer Züge lang (in einer echten Partie bestätigt).
+                     (or (try-score-line view legal-actions)
+                         (try-install-ice view legal-actions run-history)
                          (try-install-agenda view legal-actions)
-                         (try-score-line view legal-actions)
                          (try-draw-for-scoring-window view legal-actions)
                          (try-econ view legal-actions)
                          {:action (first legal-actions)
@@ -784,9 +850,15 @@
             (choose-by-label options label
                               (str "heuristic-corp: Server-Wahl fuer " (:title (:card prompt)) " -> " label)))
           (when (= :select (:prompt-type prompt))
-            (when-let [opt (select-seamless-target view options)]
-              {:option opt :reason (str "heuristic-corp: Seamless-Launch-Ziel -> " (:label opt))}))
-          (bp/on-prompt random-delegate view prompt options)))))
+            (or (when-let [opt (select-seamless-target view options)]
+                  {:option opt :reason (str "heuristic-corp: Seamless-Launch-Ziel -> " (:label opt))})
+                (when-let [opt (rez-offer-choice options)]
+                  {:option opt :reason (str "heuristic-corp: Regel (Gratis-/Rabatt-Rez-Angebot) -> "
+                                            (:label opt) " (teuerstes rezzbares Ice)")})
+                (when-let [opt (free-install-offer-choice view run-history options)]
+                  {:option opt :reason (str "heuristic-corp: Regel (Gratis-/Rabatt-Install-Angebot) -> "
+                                            (:label opt))})))
+          (random-fallback-with-log random-delegate view prompt options)))))
 
 (defn heuristic-corp-bot
   "Baut einen seedbaren Heuristik-Corp-Bot. `seed` steuert nur den

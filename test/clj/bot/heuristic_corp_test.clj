@@ -84,6 +84,74 @@
           decision (bp/on-prompt bot v prompt options)]
       (is (some #{(:option decision)} options)))))
 
+(deftest gratis-rez-angebot-waehlt-teuerstes-ice
+  ;; Bug aus einer echten Partie: ein Gratis-/Rabatt-Rez-Angebot (z.B. Send
+  ;; a Message :stolen -- "rez an ice, ignoring all costs") fiel bisher
+  ;; ungenutzt an den Zufall durch und wurde abgelehnt. rez-offer-choice
+  ;; waehlt jetzt strukturell (installiert + unrezzt + Ice) das teuerste
+  ;; passende Ice unter den Optionen.
+  (do-game
+    (new-game {:corp {:hand ["Ice Wall" "Bastion"] :credits 0}})
+    (play-from-hand state :corp "Ice Wall" "HQ")
+    (play-from-hand state :corp "Bastion" "R&D")
+    (core/resolve-ability
+     state :corp
+     {:prompt "Choose a piece of ice to rez, ignoring all costs"
+      :choices {:card #(and (:installed %) (= "ICE" (:type %)) (not (:rezzed %)))}
+      :effect (fn [_ _ _ _ _])}
+     (get-in @state [:corp :identity]) nil)
+    (let [bot (hc/heuristic-corp-bot 1)
+          v (view/view-for state :corp)
+          prompt (get-in v [:corp :prompt-state])
+          options (legal/prompt-options v :corp)
+          decision (bp/on-prompt bot v prompt options)]
+      (is (= "Bastion" (:label (:option decision)))
+          "teuerstes Ice (Bastion, Rez 4) gewaehlt statt Ice Wall (Rez 1)"))))
+
+(deftest gratis-install-angebot-installiert-wenn-gebraucht
+  ;; Bug aus einer echten Partie: Brân 1.0s "Ice aus HQ/Archiv
+  ;; installieren"-Subroutine fiel ungenutzt an den Zufall durch.
+  ;; free-install-offer-choice installiert jetzt, wenn ein Zentralserver
+  ;; (hier: HQ) noch Bedarf hat.
+  (do-game
+    (new-game {:corp {:hand ["Ice Wall"] :credits 10}})
+    (core/resolve-ability
+     state :corp
+     {:prompt "Choose an ice to install"
+      :choices {:card #(and (= "ICE" (:type %)) (not (:installed %)))}
+      :effect (fn [_ _ _ _ _])}
+     (get-in @state [:corp :identity]) nil)
+    (let [bot (hc/heuristic-corp-bot 1)
+          v (view/view-for state :corp)
+          prompt (get-in v [:corp :prompt-state])
+          options (legal/prompt-options v :corp)
+          decision (bp/on-prompt bot v prompt options)]
+      (is (= "Ice Wall" (:label (:option decision)))
+          "HQ braucht noch Ice -> Angebot wird gezielt genutzt"))))
+
+(deftest gratis-install-angebot-ungenutzt-wenn-nicht-gebraucht
+  ;; Umgekehrter Fall: Zentralen ausreichend taxiert, kein Scoring-Remote
+  ;; -- kein Verwendungszweck, das Angebot wird NICHT blind gegriffen,
+  ;; sondern faellt sichtbar (Log-Markierung) an den Zufall.
+  (do-game
+    (new-game {:corp {:hand ["Ice Wall" "Bastion" "Bastion"] :credits 20}})
+    (core/gain state :corp :click 10)
+    (play-from-hand state :corp "Bastion" "HQ")
+    (play-from-hand state :corp "Bastion" "R&D")
+    (core/resolve-ability
+     state :corp
+     {:prompt "Choose an ice to install"
+      :choices {:card #(and (= "ICE" (:type %)) (not (:installed %)))}
+      :effect (fn [_ _ _ _ _])}
+     (get-in @state [:corp :identity]) nil)
+    (let [bot (hc/heuristic-corp-bot 1)
+          v (view/view-for state :corp)
+          prompt (get-in v [:corp :prompt-state])
+          options (legal/prompt-options v :corp)
+          decision (bp/on-prompt bot v prompt options)]
+      (is (str/includes? (:reason decision) "kein Playbook-Handler")
+          "kein Bedarf -> kein gezielter Griff, sichtbar an den Zufall delegiert"))))
+
 (deftest regel-1-zentralserver-icen-prioritaet-hq
   (do-game
     (new-game {:corp {:hand ["Ice Wall"] :credits 10}})
@@ -339,15 +407,17 @@
       (is (= "Priority Requisition" (:title (get-content state :remote1 0)))
           "Runner koennte den Einbruch technisch bezahlen, waere danach aber fast pleite -- Tausch lohnt sich"))))
 
-(deftest regel-3-fast-advance-linie-uebergeht-sicherheitsfrage-beim-install
-  ;; Design-Spec Scoring-Fenster-Zielmodell Phase 2: eine bei Install schon
-  ;; absehbare Fast-Advance-Linie (Seamless Launch + passendes
-  ;; Restadvancement) macht die Sicherheitsfrage irrelevant -- selbst ein
-  ;; unsicherer Remote (Runner hat 20 Credits, weit ueber jeder akzeptablen
-  ;; Armuts-Schwelle) blockiert den Install nicht, wenn die Agenda quasi
-  ;; sofort gescort werden kann. Grosszuegiger Klick-Vorrat (core/gain),
-  ;; damit das exakte Restadvancement von Priority Requisition nicht
-  ;; bekannt sein muss -- die Bedingung ist so oder so erfuellt.
+(deftest regel-3-kein-fast-advance-bypass-beim-install-mehr
+  ;; Korrektur 2026-09-02: der fruehere Fast-Advance-Bypass beim Install
+  ;; (Seamless Launch in der Hand macht die Sicherheitsfrage angeblich
+  ;; irrelevant) ist entfernt. Grund: same-turn Install+Seamless-Launch ist
+  ;; UNMOEGLICH -- place-advancement-counter verlangt eine Karte, die NICHT
+  ;; diesen Zug installiert wurde (siehe try-score-line). Eine echte
+  ;; Spielpartie zeigte den Schaden: der Bypass installierte eine unsichere
+  ;; Agenda, Seamless Launch landete danach mangels gueltigem Ziel
+  ;; zufaellig auf einem ANDEREN Ice statt der Agenda. Ein unsicherer
+  ;; Remote (Runner hat 20 Credits) blockiert den Install jetzt auch MIT
+  ;; Seamless Launch in der Hand.
   (do-game
     (new-game {:corp {:hand ["Priority Requisition" "Seamless Launch" "Ice Wall" "Ice Wall" "Bastion"]
                       :credits 20}
@@ -358,9 +428,8 @@
     (play-from-hand state :corp "Bastion" "New remote")
     (let [bot (hc/heuristic-corp-bot 1)]
       (game-runner/decide-one! {:state state :side :corp :kind :action :bot bot})
-      (game-runner/decide-one! {:state state :side :corp :kind :prompt :bot bot})
-      (is (= "Priority Requisition" (:title (get-content state :remote1 0)))
-          "Fast-Advance-Linie (Seamless Launch) macht die Sicherheitsfrage irrelevant"))))
+      (is (empty? (get-content state :remote1))
+          "Seamless Launch in der Hand darf die Sicherheitsfrage nicht mehr uebergehen"))))
 
 (deftest regel-2-5-ziehen-hoch-priorisiert-wenn-nur-agenda-fehlt
   ;; Ergaenzung aus der Gap-Statistik (2026-09-02): scheitert das Scoring-
@@ -542,6 +611,45 @@
       (game-runner/decide-one! {:state state :side :corp :kind :action :bot bot})
       (is (= 1 (get-counters (get-content state :remote1 0) :advancement))))))
 
+(deftest regel-4-advanct-trotz-unsicherer-taxierung-weiter
+  ;; Korrektur 2026-09-02, aus einer echten Partie bestaetigt: einmal
+  ;; installiert, blockiert die Sicherheitsfrage das weitere Advancen
+  ;; NICHT mehr -- eine liegende, unfertige Agenda ist die riskanteste
+  ;; Position im Spiel, Fertigstellen schlaegt Zoegern. Runner hat viele
+  ;; Credits (Remote gilt als unsicher/nicht lohnend), trotzdem wird
+  ;; weiter advanced statt (wie vorher) auf Regel 5.6 auszuweichen.
+  (do-game
+    (new-game {:corp {:hand ["Priority Requisition"] :credits 20}
+               :runner {:credits 20}})
+    (play-from-hand state :corp "Priority Requisition" "New remote")
+    (core/gain state :corp :click 10 :credit 10)
+    (click-advance state :corp (get-content state :remote1 0))
+    (let [bot (hc/heuristic-corp-bot 1)
+          v (view/view-for state :corp)
+          actions (legal/turn-actions v :corp)
+          decision (bp/decide bot v actions)]
+      (is (str/includes? (:reason decision) "Regel 4 (weiter advancen)")
+          "advanct trotz unsicherer Taxierung weiter, statt zu zoegern"))))
+
+(deftest regel-4-schlaegt-regel-1-wenn-beide-verfuegbar
+  ;; Reihenfolge-Korrektur 2026-09-02: Scoren/Advancen (Regel 4) outrankt
+  ;; jetzt Zentralserver-icen (Regel 1) -- vorher blockierte ein noch
+  ;; unversorgter Zentralserver jedes Advancen (in einer echten Partie
+  ;; ueber mehrere Zuege bestaetigt: Regel 5.6 statt "advance" gewaehlt,
+  ;; obwohl "advance" als legale Option verfuegbar war).
+  (do-game
+    (new-game {:corp {:hand ["Priority Requisition" "Ice Wall"] :credits 20}
+               :runner {:credits 0}})
+    (play-from-hand state :corp "Priority Requisition" "New remote")
+    (core/gain state :corp :click 10 :credit 10)
+    (click-advance state :corp (get-content state :remote1 0))
+    (let [bot (hc/heuristic-corp-bot 1)
+          v (view/view-for state :corp)
+          actions (legal/turn-actions v :corp)
+          decision (bp/decide bot v actions)]
+      (is (str/includes? (:reason decision) "Regel 4")
+          "Advancen der liegenden Agenda schlaegt Regel 1, obwohl HQ noch Ice braucht"))))
+
 (deftest regel-4-seamless-launch-score-linie
   ;; Priority Requisition (Advancement-Kosten 5) hat schon 1 Advancement aus
   ;; einer vorherigen Runde (Rest 4). 8 verfuegbare Klicks diesen Zug (Rest
@@ -685,11 +793,15 @@
       (is (str/includes? (:reason decision) "Regel 5.6 (Klick fuer Credit)")
           "Sicherheitsboden erreicht (deck-count = DRAW-SAFETY-BUFFER) -> kein freiwilliges Ziehen mehr"))))
 
-(deftest regel-5-5-reichlich-credits-ist-kein-eigenstaendiger-ziehen-grund
-  ;; Korrektur 2026-09-02: "Credits >= PLENTY-CREDITS" fliegt als eigener
-  ;; Ziehen-Auslöser raus -- reich sein ist kein Grund zu ziehen. Agenda in
-  ;; der Hand, Hand nicht duenn, Deck komfortabel voll, aber viele Credits
-  ;; -> trotzdem kein Ziehen, Regel 5.6 stattdessen.
+(deftest regel-5-5-reichlich-credits-loest-ziehen-vor-credit-klick-aus
+  ;; Wiedereinführung 2026-09-02 (aus einer echten Partie: 13-16 Credits,
+  ;; wiederholtes Klicken statt Ziehen): Agenda in der Hand, Hand nicht
+  ;; duenn, Deck komfortabel voll, aber Credits >= PLENTY-CREDITS -> Ziehen
+  ;; (Regel 5.5) schlaegt den generischen Credit-Klick (Regel 5.6). Kein
+  ;; Widerspruch zur fruehereren Entfernung von PLENTY-CREDITS (siehe
+  ;; should-draw?-Docstring): Regel 5.5 steht strukturell schon hinter
+  ;; allen produktiveren Regeln, konkurriert hier nur noch gegen den reinen
+  ;; Credit-Klick.
   (do-game
     (new-game {:corp {:hand ["Hostile Takeover" "Hostile Takeover" "Hostile Takeover"]
                       :deck (repeat 15 "Hedge Fund")
@@ -698,8 +810,8 @@
           v (view/view-for state :corp)
           actions (legal/turn-actions v :corp)
           decision (bp/decide bot v actions)]
-      (is (str/includes? (:reason decision) "Regel 5.6 (Klick fuer Credit)")
-          "viele Credits allein loesen kein Ziehen mehr aus"))))
+      (is (str/includes? (:reason decision) "Regel 5.5 (Karte ziehen)")
+          "reichlich Credits (>= PLENTY-CREDITS) loesen Ziehen vor dem Credit-Klick aus"))))
 
 (deftest regel-5-5-zurueckhaltend-unter-deck-caution-threshold
   ;; Korrektur 2026-09-02: keine harte 1x-pro-Zug-Obergrenze mehr, aber
