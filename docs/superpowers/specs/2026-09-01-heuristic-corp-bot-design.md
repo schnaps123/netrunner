@@ -19,6 +19,11 @@ Random-Runner (121/200 = 60,5 %). Schwelle fest in dieser Spec, nicht erst
 im Plan — sonst ist am Ende nicht objektiv entscheidbar, ob das Playbook
 etwas gebracht hat.
 
+Ergebnis 2026-09-02: **199/200 (99,5 %)** — `bin/bot-sim 200 --corp-bot
+heuristic --runner-bot random --seed 1 --log-dir
+logs/bot-sim/heuristic-vs-random` (0 hängende Prompts, 0 Step-Cap-Abbrüche,
+0 Exceptions, ⌀ 7,8 Züge/Partie). Schwelle deutlich übertroffen.
+
 Voraussetzung (zuerst umzusetzen, siehe [[bot-eval-v1-backlog]]): `bot.eval`s
 Server-Bedrohungsschätzung nutzt aktuell (a) den global stärksten
 installierten Icebreaker ohne Typ-Matching und (b) einen groben
