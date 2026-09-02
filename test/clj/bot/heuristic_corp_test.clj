@@ -134,3 +134,52 @@
       (is (= 2 (count (get-ice state :remote1)))
           "unsicherer Remote (Runner hat 20 Credits) -> zweites Ice statt Agenda-Install")
       (is (empty? (get-content state :remote1))))))
+
+(deftest regel-3-agenda-platzieren-wenn-sicher
+  ;; Alle Zentralserver zuerst manuell (nicht ueber den Bot) icen, sonst
+  ;; wuerde Regel 1 vor Regel 3 greifen und der Test isoliert nicht die
+  ;; Agenda-Platzierung. Bastion (Staerke 4, Rez-Kosten 4) statt Ice Wall
+  ;; im Remote: ohne installierten Runner-Breaker liegt
+  ;; raw-ice-cost(4,0)=5 ueber dem Sicherheitspuffer (0 Runner-Credits + 4
+  ;; Puffer = 4) -- 5 > 4, Server gilt als sicher -> Agenda wird
+  ;; installiert. Ein einzelner Ice Wall (Kosten 2) waere mit 2 <= 4 IMMER
+  ;; "unsicher" gewesen, unabhaengig vom Runner-Credit-Stand.
+  (do-game
+    (new-game {:corp {:hand ["Priority Requisition" "Ice Wall" "Ice Wall" "Ice Wall" "Bastion"]
+                      :credits 20}
+               :runner {:credits 0}})
+    (core/gain state :corp :click 10)
+    (play-from-hand state :corp "Ice Wall" "HQ")
+    (play-from-hand state :corp "Ice Wall" "R&D")
+    (play-from-hand state :corp "Ice Wall" "Archives")
+    (play-from-hand state :corp "Bastion" "New remote")
+    (rez state :corp (get-ice state :remote1 0))
+    (let [bot (hc/heuristic-corp-bot 1)]
+      (game-runner/decide-one! {:state state :side :corp :kind :action :bot bot})
+      (game-runner/decide-one! {:state state :side :corp :kind :prompt :bot bot})
+      (is (= 1 (count (get-content state :remote1))))
+      (is (= "Priority Requisition" (:title (get-content state :remote1 0)))))))
+
+(deftest regel-3-kein-agenda-install-ohne-sicherheitspuffer
+  ;; Gleiche Zentralserver-Vorbereitung wie oben. Ice Wall (Staerke 1, 1
+  ;; Sub) ist ohne installierten Breaker fuer 2 Credits zu knacken
+  ;; (raw-ice-cost(1,0)=max(1,2)=2) -- der Runner hat 20 Credits sichtbar,
+  ;; 2 <= 20+4 ist wahr -> unsicher, selbst mit Puffer. Regel 3 darf also
+  ;; NICHT greifen, Regel 2 legt stattdessen weiteres Ice nach.
+  (do-game
+    (new-game {:corp {:hand ["Priority Requisition" "Ice Wall" "Ice Wall" "Ice Wall" "Ice Wall" "Ice Wall"]
+                      :credits 20}
+               :runner {:credits 20}})
+    (core/gain state :corp :click 10)
+    (play-from-hand state :corp "Ice Wall" "HQ")
+    (play-from-hand state :corp "Ice Wall" "R&D")
+    (play-from-hand state :corp "Ice Wall" "Archives")
+    (play-from-hand state :corp "Ice Wall" "New remote")
+    (rez state :corp (get-ice state :remote1 0))
+    (let [bot (hc/heuristic-corp-bot 1)]
+      (game-runner/decide-one! {:state state :side :corp :kind :action :bot bot})
+      (game-runner/decide-one! {:state state :side :corp :kind :prompt :bot bot})
+      (is (empty? (get-content state :remote1))
+          "Remote unsicher (Runner kann die geringe Ice-Wall-Bedrohung leicht bezahlen) -> keine Agenda")
+      (is (= 2 (count (get-ice state :remote1)))
+          "stattdessen greift Regel 2: weiteres Ice statt Agenda-Install"))))

@@ -105,14 +105,38 @@
                     (if (= target (central-needing-ice view)) "1 (Zentralserver icen)" "2 (Scoring-Remote aufbauen)")
                     " -> " (server-label target) ", installiere " (get-in act [:args :card :title]))})))
 
+(defn- agenda-install-target
+  [view]
+  (when-let [zone (scoring-remote-zone view)]
+    (when (and (seq (server-ices view zone))
+               (not (remote-has-agenda? view zone))
+               (safe-for-commitment? view zone))
+      zone)))
+
+;; --- Regel 3: Agenda platzieren ---
+
+(defn- try-install-agenda
+  [view legal-actions]
+  (when-let [zone (agenda-install-target view)]
+    (when-let [act (first-play-of-type legal-actions "Agenda")]
+      (let [threat (server-threat-for view zone)]
+        {:action act
+         :reason (str "heuristic-corp: Regel 3 (Agenda platzieren) -> " (server-label zone)
+                      " estimated-cost=" (:estimated-cost threat)
+                      " > runner-credit(" (runner-credit view) ")+buffer("
+                      ASSUMED-RUNNER-INCOME-PER-TURN ") -> sicher, installiere "
+                      (get-in act [:args :card :title]))}))))
+
 ;; --- Prompt-Routing: Server-Wahl ---
 
 (defn- select-target-server
   "Server-Name-String für den Install-Prompt von `card` — nil, wenn `card`
-  gerade nicht Teil einer aktiven Ice-Install-Entscheidung ist."
+  gerade nicht Teil einer aktiven Install-Entscheidung ist."
   [view card]
-  (when (= "ICE" (:type card))
-    (some-> (ice-install-target view) server-label)))
+  (case (:type card)
+    "ICE" (some-> (ice-install-target view) server-label)
+    "Agenda" (some-> (agenda-install-target view) server-label)
+    nil))
 
 (defn- choose-by-label [options label reason]
   (when-let [opt (first (filter #(= label (:label %)) options))]
@@ -135,6 +159,7 @@
   bp/Bot
   (decide [_ view legal-actions]
     (or (try-install-ice view legal-actions)
+        (try-install-agenda view legal-actions)
         (bp/decide random-delegate view legal-actions)))
   (on-prompt [_ view prompt options]
     (if (= :mulligan (:prompt-type prompt))
