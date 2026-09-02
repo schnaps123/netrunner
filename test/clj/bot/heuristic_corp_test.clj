@@ -362,6 +362,104 @@
       (is (= "Priority Requisition" (:title (get-content state :remote1 0)))
           "Fast-Advance-Linie (Seamless Launch) macht die Sicherheitsfrage irrelevant"))))
 
+(deftest regel-2-5-ziehen-hoch-priorisiert-wenn-nur-agenda-fehlt
+  ;; Ergaenzung aus der Gap-Statistik (2026-09-02): scheitert das Scoring-
+  ;; Fenster AUSSCHLIESSLICH an :agenda (Credits+Taxierung stehen schon),
+  ;; ist Ziehen die produktivste Handlung -- outrankt sogar Regel 5.4
+  ;; (Econ-Operation spielen), obwohl Hedge Fund spielbar waere.
+  (do-game
+    (new-game {:corp {:hand ["Hedge Fund" "Bastion" "Bastion" "Bastion"]
+                      :deck (repeat 15 "Hedge Fund")
+                      :credits 20}
+               :runner {:credits 0}})
+    (core/gain state :corp :click 10)
+    (play-from-hand state :corp "Bastion" "HQ")
+    (play-from-hand state :corp "Bastion" "R&D")
+    (play-from-hand state :corp "Bastion" "New remote")
+    (rez state :corp (get-ice state :remote1 0))
+    (let [bot (hc/heuristic-corp-bot 1)
+          v (view/view-for state :corp)
+          actions (legal/turn-actions v :corp)
+          decision (bp/decide bot v actions)]
+      (is (= #{:agenda} (:scoring-gap decision)) "Testaufbau-Kontrolle: nur :agenda fehlt")
+      (is (str/includes? (:reason decision) "Regel 2.5")))))
+
+(deftest regel-2-5-greift-nicht-in-der-caution-zone
+  ;; Dieselben Grenzen wie Regel 5.5: in der Caution-Zone (Restdeck <
+  ;; DECK-CAUTION-THRESHOLD) greift die Sonderprioritaet NICHT. Hand nach
+  ;; Setup bewusst NICHT duenn (3 uebrige Ice-Wall-Karten, die nirgends
+  ;; mehr gebraucht werden -- Zentralen und Remote sind schon ausreichend
+  ;; taxiert), damit auch Regel 5.5 (duenne Hand) nicht stattdessen greift
+  ;; -- isoliert zeigt das: in der Caution-Zone entscheidet Regel 5.6.
+  (do-game
+    (new-game {:corp {:hand ["Bastion" "Bastion" "Bastion" "Ice Wall" "Ice Wall" "Ice Wall"]
+                      :deck (repeat (dec hc/DECK-CAUTION-THRESHOLD) "Hedge Fund")
+                      :credits 20}
+               :runner {:credits 0}})
+    (core/gain state :corp :click 10)
+    (play-from-hand state :corp "Bastion" "HQ")
+    (play-from-hand state :corp "Bastion" "R&D")
+    (play-from-hand state :corp "Bastion" "New remote")
+    (rez state :corp (get-ice state :remote1 0))
+    (let [bot (hc/heuristic-corp-bot 1)
+          v (view/view-for state :corp)
+          actions (legal/turn-actions v :corp)
+          decision (bp/decide bot v actions)]
+      (is (= #{:agenda} (:scoring-gap decision)) "Testaufbau-Kontrolle: nur :agenda fehlt")
+      (is (not (str/includes? (:reason decision) "Regel 2.5"))
+          "Caution-Zone -> Sonderprioritaet greift nicht, Regel 5.6 stattdessen")
+      (is (str/includes? (:reason decision) "Regel 5.6")))))
+
+(deftest regel-2-5-ziehen-trotz-voller-hand-wenn-alles-wertlos
+  ;; Praezisierung 2026-09-02: volle Hand ist KEIN hartes Verbot, sondern
+  ;; eine Abwaegung. Sind alle Handkarten ohnehin wertlos (hier:
+  ;; unbezahlbare Operationen bei 2 Credits -- Hedge Fund kostet 5,
+  ;; Government Subsidy mehr), lohnt sich Ziehen trotzdem: der drohende
+  ;; Abwurf kostet nichts.
+  (do-game
+    (new-game {:corp {:hand ["Bastion" "Bastion" "Bastion" "Hedge Fund" "Hedge Fund"
+                             "Government Subsidy" "Government Subsidy" "Government Subsidy"]
+                      :deck (repeat 15 "Hedge Fund")
+                      :credits 20}
+               :runner {:credits 0}})
+    (core/gain state :corp :click 10)
+    (play-from-hand state :corp "Bastion" "HQ")
+    (play-from-hand state :corp "Bastion" "R&D")
+    (play-from-hand state :corp "Bastion" "New remote")
+    (rez state :corp (get-ice state :remote1 0))
+    (swap! state assoc-in [:corp :credit] 2)
+    (let [bot (hc/heuristic-corp-bot 1)
+          v (view/view-for state :corp)
+          actions (legal/turn-actions v :corp)
+          decision (bp/decide bot v actions)]
+      (is (= 5 (count (get-in v [:corp :hand]))) "Testaufbau-Kontrolle: Hand an Maximalgroesse")
+      (is (= #{:agenda} (:scoring-gap decision)) "Testaufbau-Kontrolle: nur :agenda fehlt")
+      (is (str/includes? (:reason decision) "Regel 2.5")))))
+
+(deftest regel-2-5-kein-ziehen-bei-voller-hand-voller-wertvoller-karten
+  ;; Umgekehrter Fall: alle Handkarten sind gerade wertvoll UND spielbar
+  ;; (Econ-Assets) -- der Vergleich faellt zugunsten des Spielens aus,
+  ;; Regel 2.5 tritt zurueck, Regel 5.1 installiert stattdessen.
+  (do-game
+    (new-game {:corp {:hand ["Bastion" "Bastion" "Bastion" "Regolith Mining License"
+                             "Regolith Mining License" "Nico Campaign" "Nico Campaign" "Nico Campaign"]
+                      :deck (repeat 15 "Hedge Fund")
+                      :credits 20}
+               :runner {:credits 0}})
+    (core/gain state :corp :click 10)
+    (play-from-hand state :corp "Bastion" "HQ")
+    (play-from-hand state :corp "Bastion" "R&D")
+    (play-from-hand state :corp "Bastion" "New remote")
+    (rez state :corp (get-ice state :remote1 0))
+    (let [bot (hc/heuristic-corp-bot 1)
+          v (view/view-for state :corp)
+          actions (legal/turn-actions v :corp)
+          decision (bp/decide bot v actions)]
+      (is (= 5 (count (get-in v [:corp :hand]))) "Testaufbau-Kontrolle: Hand an Maximalgroesse")
+      (is (= #{:agenda} (:scoring-gap decision)) "Testaufbau-Kontrolle: nur :agenda fehlt")
+      (is (not (str/includes? (:reason decision) "Regel 2.5")))
+      (is (str/includes? (:reason decision) "Regel 5.1")))))
+
 (deftest decide-liefert-scoring-gap-wenn-remote-existiert
   (do-game
     (new-game {:corp {:hand ["Priority Requisition" "Ice Wall"] :credits 10}})

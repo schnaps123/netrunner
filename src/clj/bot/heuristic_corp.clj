@@ -90,6 +90,28 @@
   zweistufige Zurückhaltung, die sich dem Sicherheitsboden annähert."
   10)
 
+(def AGENDA-SEARCH-VALUE
+  "Näherungswert, wie viel gezieltes Graben nach der fehlenden Agenda
+  (Regel 2.5) wert ist, wenn die Hand schon an/über der Maximalgröße liegt
+  und ein Pflicht-Abwurf am Zugende droht -- verglichen gegen den Wert der
+  Karte, die dabei am ehesten geopfert würde (HAND-CARD-DISCARD-COST der
+  günstigsten Handkarte). Kein hartes Verbot bei voller Hand: ein Abwurf
+  ist der Preis, meist billiger als ein Zug ohne jede andere produktive
+  Option -- aber eine echte Abwägung, kein Freifahrtschein. Justierbar."
+  3)
+
+(def HAND-CARD-DISCARD-COST
+  "Ungefährer Wert pro Kartentyp, eine Handkarte durch Pflicht-Abwurf am
+  Zugende zu verlieren -- 0 für eine Karte, die JETZT ohnehin keine legale
+  Aktion hat (discard-cost, siehe dort: nichts zu tun, sicher zu verlieren
+  -- Regel 1/2/5.1-5.4 laufen ohnehin vorher oder parallel, ein Ice ohne
+  aktuelles Installationsziel oder eine unbezahlbare Operation zählen
+  darüber schon als 'ohne legale Aktion'). Asset/Upgrade höher gewichtet
+  als Ice/Operation (gleicher Gedanke wie trash-weight im Wert-Modell-
+  Design: laufende Engine-Teile sind wertvoller als Einweg-Karten oder
+  gerade ungebrauchtes Ice). Justierbar."
+  {"Asset" 5 "Upgrade" 4 "ICE" 1 "Operation" 1})
+
 (def TOTAL-AGENDA-COPIES-IN-DECK
   "Agenda-Kopien in bot.cards/gateway-corp (Offworld Office x3, Send a
   Message x2) -- fest, weil der Bot ausschließlich dieses eine Deck spielt
@@ -666,6 +688,75 @@
   (when-let [zone (scoring-remote-zone view)]
     (scoring-window-gap view zone)))
 
+;; --- Regel 2.5: gezielt nach der fehlenden Agenda graben ---
+
+(defn- max-hand-size
+  "Maximale Handkartenzahl AUS DEM SPIELSTATE (game.core.hand-size,
+  Default 5, aber Karten/Effekte können sie verändern -- nie fest
+  annehmen)."
+  [view]
+  (get-in view [:corp :hand-size :total] 5))
+
+(defn- hand-card-has-legal-action?
+  "Hat `card` JETZT irgendeine legale Aktion (spielen, Ability, rezzen,
+  advancen)? Wenn nicht, ist sie diesen Zug ohnehin totes Gewicht --
+  Grundlage für discard-cost."
+  [legal-actions card]
+  (boolean (some #(and (contains? #{"play" "ability" "rez" "advance"} (:command %))
+                       (= (:cid card) (get-in % [:args :card :cid])))
+                 legal-actions)))
+
+(defn- discard-cost
+  "Ungefährer Wert, `card` an den Pflicht-Abwurf am Zugende zu verlieren --
+  0, wenn sie JETZT ohnehin keine legale Aktion hat (nichts zu tun, siehe
+  hand-card-has-legal-action?), sonst ein Platzhalterwert nach Kartentyp
+  (HAND-CARD-DISCARD-COST)."
+  [legal-actions card]
+  (if (hand-card-has-legal-action? legal-actions card)
+    (get HAND-CARD-DISCARD-COST (:type card) 2)
+    0))
+
+(defn- draw-worth-discard-risk?
+  "Lohnt sich Ziehen (Regel 2.5), obwohl die Hand schon an/über der
+  Maximalgröße liegt und ein Pflicht-Abwurf am Zugende droht? Kein hartes
+  Verbot, sondern eine Abwägung: Wert des Suchens (AGENDA-SEARCH-VALUE)
+  gegen den Wert der Karte, die am ehesten geopfert würde (die günstigste
+  in der Hand, discard-cost) -- ein Abwurf ist der Preis, meist billiger
+  als ein Zug ohne jede andere produktive Option, aber keine Garantie:
+  eine Hand voller wertvoller, gerade spielbarer Karten gewinnt den
+  Vergleich."
+  [view legal-actions]
+  (let [hand (corp-hand view)]
+    (or (< (count hand) (max-hand-size view))
+        (empty? hand)
+        (>= AGENDA-SEARCH-VALUE (apply min (map #(discard-cost legal-actions %) hand))))))
+
+(defn- try-draw-for-scoring-window
+  "Fehlt dem Scoring-Fenster AUSSCHLIESSLICH :agenda (Credits UND Taxierung
+  stehen schon), ist Ziehen keine Rückfallaktion mehr, sondern die
+  produktivste verfügbare Handlung -- der Bot gräbt gezielt nach der
+  fehlenden Zutat, statt Econ zu spielen oder zu klicken (Ergänzung aus der
+  Gap-Statistik, 2026-09-02: :agenda löste :tax als häufigsten Blocker ab,
+  sobald Phase 2 griff). Outrankt Regel 5.1-5.6 (try-econ), aber NICHT
+  Regel 1/2 (echte, von diesem Fenster unabhängige Verteidigungslücken
+  bleiben Vorrang). Begrenzt durch DRAW-SAFETY-BUFFER (harter Boden) UND
+  DECK-CAUTION-THRESHOLD (Zurückhaltung bei kleinem Restdeck) -- dieselben
+  Grenzen wie Regel 5.5, nur höher priorisiert: in der Caution-Zone greift
+  diese Sonderpriorität NICHT, dort entscheidet wie gehabt Regel 5.5.
+  ZUSÄTZLICH begrenzt durch draw-worth-discard-risk? -- eine volle Hand
+  bedeutet einen Pflicht-Abwurf am Zugende, kein hartes Verbot, aber eine
+  Abwägung Wert-des-Suchens gegen Wert-des-drohenden-Abwurfs."
+  [view legal-actions]
+  (when (= #{:agenda} (current-scoring-gap view))
+    (let [dc (deck-count view)]
+      (when (and (> dc DRAW-SAFETY-BUFFER)
+                 (>= dc DECK-CAUTION-THRESHOLD)
+                 (draw-worth-discard-risk? view legal-actions))
+        (when-let [act (find-legal legal-actions "draw" (constantly true))]
+          {:action act
+           :reason (str "heuristic-corp: Regel 2.5 (Scoring-Fenster fehlt nur Agenda -> gezielt ziehen) "
+                        "-> Handgroesse=" (hand-size view) "/" (max-hand-size view) " Deck=" dc)})))))
+
 (defrecord HeuristicCorpBot [random-delegate run-history]
   bp/Bot
   (decide [_ view legal-actions]
@@ -675,6 +766,7 @@
                      (or (try-install-ice view legal-actions run-history)
                          (try-install-agenda view legal-actions)
                          (try-score-line view legal-actions)
+                         (try-draw-for-scoring-window view legal-actions)
                          (try-econ view legal-actions)
                          {:action (first legal-actions)
                           :reason "heuristic-corp: Regel 6 (Fallback) -> keine Regel griff, erste Option"}))]
