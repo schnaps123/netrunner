@@ -397,26 +397,24 @@
        (apply max 0)))
 
 (defn- remaining-advancement-cost
-  "Credits, um eine im Scoring-Remote bereits liegende, unfertig advancte
-  Agenda fertig zu advancen -- 1 Credit pro 'advance'-Klick (Basisaktion,
-  siehe corp-click-actions), 0 wenn keine Agenda dort liegt oder sie schon
-  fertig ist. Teil von credit-ready? (siehe dort).
+  "Credits, die credit-ready? (siehe dort) für eine im Scoring-Remote
+  bereits liegende, unfertig advancte Agenda verlangt -- HÖCHSTENS EINEN
+  Advance-Schritt (1 Credit), NICHT den gesamten Restadvancement-Betrag. 0
+  wenn keine Agenda dort liegt oder sie schon fertig ist.
 
-  BEKANNTE UEBERSTRENGE (notiert 2026-09-03, noch NICHT behoben): verlangt
-  aktuell die GESAMTEN Restadvancement-Kosten auf einmal. Das ist zu
-  streng -- die Credits fuer spaetere Advances kann die Corp in den
-  FOLGENDEN Zuegen verdienen (Regel 3.5/try-fund-score-line deckt genau
-  das schon ab), sie schon beim Install zu verlangen blockiert das
-  Scoring-Fenster unnoetig lange. 200-Partien-Vergleich (2026-09-03):
-  Agenda-Siege 57 -> 48 nach dieser Aenderung, Gap-Verteilung kippte auf
-  :credits als dominante Dimension (6597 von ~12800 Gap-Eintraegen) --
-  passt zu dieser Ueberstrenge als Erklaerung, auch wenn der Rueckgang
-  allein am Rand des dokumentierten ±5-Rauschens liegt. Naechste Session:
-  hier auf HOECHSTENS EINEN Advance-Schritt (1 Credit) begrenzen, statt
-  (max 0 (remaining-advancement agenda)) den vollen Rest zu verlangen."
+  Korrektur 2026-09-03 (zweite Anpassung, im selben Tag): die erste Version
+  verlangte den vollen Rest auf einmal -- zu streng, denn die Credits für
+  WEITERE Advances verdient die Corp über die FOLGENDEN Züge, sie müssen
+  nicht alle im Moment des Installierens vorhanden sein (Regel 3.5/
+  try-fund-score-line deckt genau diesen laufenden Bedarf ohnehin ab). Ein
+  200-Partien-Vergleich bestätigte den Verdacht: Agenda-Siege 57 -> 48 nach
+  der ersten (zu strengen) Version, mit :credits als neu dominanter
+  Gap-Dimension -- der Cap auf einen Schritt macht das Gate wieder so eng
+  wie tatsächlich nötig (genug, um JETZT weiterzukommen), ohne den vollen
+  Rest vorzuschreiben."
   [view zone]
   (if-let [agenda (first (filter agenda-card? (server-content view zone)))]
-    (max 0 (remaining-advancement agenda))
+    (min 1 (max 0 (remaining-advancement agenda)))
     0))
 
 (defn- credit-ready?

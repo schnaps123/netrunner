@@ -517,14 +517,16 @@
         (game-runner/decide-one! {:state state :side :corp :kind :prompt :bot bot})
         (is (= "Priority Requisition" (:title (get-content state :remote1 0))))))))
 
-(deftest regel-scoring-fenster-credits-erfordert-auch-restadvancement-kosten
-  ;; Korrektur 2026-09-03, aus einer echten Partie: Agenda mit 3 von 4
-  ;; Advancements im Remote, 0 Credits -- credit-ready? kannte bisher nur
-  ;; das Rez-Budget, nicht die Advance-Kosten bis zum Score. Remote-Ice
-  ;; schon rezzt (max-unrezzed-ice-rez-cost=0), Credits genau am REZ-BUDGET-
-  ;; MARGIN (reicht fuers Rez-Budget allein) -- die alte Formel haette
-  ;; :credits faelschlich als "bereit" gemeldet, obwohl noch 4 Advance-
-  ;; Klicks (4 Credits) fehlen.
+(deftest regel-scoring-fenster-credits-erfordert-nur-einen-advance-schritt
+  ;; Korrektur 2026-09-03 (zweite Anpassung an credit-ready? im selben Tag):
+  ;; die erste Version verlangte den GESAMTEN Restadvancement-Betrag beim
+  ;; Install-Gate -- zu streng, denn die Credits fuer WEITERE Advances
+  ;; verdient die Corp ueber die folgenden Zuege (Regel 3.5/
+  ;; try-fund-score-line deckt genau diesen laufenden Bedarf ohnehin ab).
+  ;; 200-Partien-Vergleich zeigte einen Rueckgang Agenda-Siege 57 -> 48 und
+  ;; :credits als neu dominante Gap-Dimension -- Verdacht: die Uebersrenge
+  ;; erklaert das. credit-ready? verlangt jetzt nur noch Rez-Budget PLUS
+  ;; HOECHSTENS EINEN Advance-Schritt (1 Credit), nicht den vollen Rest.
   (do-game
     (new-game {:corp {:hand ["Priority Requisition" "Bastion"] :credits 20}
                :runner {:credits 0}})
@@ -533,13 +535,19 @@
     (rez state :corp (get-ice state :remote1 0))
     (play-from-hand state :corp "Priority Requisition" "Server 1")
     (click-advance state :corp (get-content state :remote1 0))
-    (swap! state assoc-in [:corp :credit] hc/REZ-BUDGET-MARGIN)
-    (let [bot (hc/heuristic-corp-bot 1)
-          v (view/view-for state :corp)
-          actions (legal/turn-actions v :corp)
-          decision (bp/decide bot v actions)]
-      (is (contains? (:scoring-gap decision) :credits)
-          "Rez-Budget allein reicht (Bastion schon rezzt), aber Restadvancement-Kosten fehlen noch"))))
+    (let [bot (hc/heuristic-corp-bot 1)]
+      (testing "Rez-Budget + 1 Advance-Schritt reicht, obwohl 4 Advances insgesamt fehlen"
+        (swap! state assoc-in [:corp :credit] (inc hc/REZ-BUDGET-MARGIN))
+        (let [v (view/view-for state :corp)
+              decision (bp/decide bot v (legal/turn-actions v :corp))]
+          (is (not (contains? (:scoring-gap decision) :credits))
+              "3 Credits (0 Rez-Budget + 2 Puffer + 1 Advance-Schritt) reichen -- der Rest kommt ueber die naechsten Zuege")))
+      (testing "unter Rez-Budget + 1 Advance-Schritt -> :credits weiterhin im Gap"
+        (swap! state assoc-in [:corp :credit] hc/REZ-BUDGET-MARGIN)
+        (let [v (view/view-for state :corp)
+              decision (bp/decide bot v (legal/turn-actions v :corp))]
+          (is (contains? (:scoring-gap decision) :credits)
+              "2 Credits reichen nicht mal fuer den naechsten einen Advance-Schritt (0+2+1=3)"))))))
 
 (deftest regel-3-commitment-als-risikoabwaegung-nicht-als-sicherheitsgarantie
   ;; Scoring-Fenster-Zielmodell Phase 2: absolute Sicherheit (Kosten >
