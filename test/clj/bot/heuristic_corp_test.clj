@@ -303,3 +303,31 @@
           credits-before (get-in @state [:corp :credit])]
       (game-runner/decide-one! {:state state :side :corp :kind :action :bot bot})
       (is (= (inc credits-before) (get-in @state [:corp :credit]))))))
+
+(deftest rez-waehrend-eines-runs-wenn-bezahlbar
+  (do-game
+    (new-game {:corp {:hand ["Ice Wall"] :credits 10}})
+    (play-from-hand state :corp "Ice Wall" "HQ")
+    (take-credits state :corp)
+    (run-on state "HQ")
+    (let [bot (hc/heuristic-corp-bot 1)]
+      (game-runner/decide-one! {:state state :side :corp :kind :run :bot bot})
+      (is (rezzed? (get-ice state :hq 0))))))
+
+(deftest kein-rez-waehrend-eines-runs-wenn-unbezahlbar
+  ;; Reihenfolge wichtig: take-credits verbraucht die VERBLEIBENDEN Klicks der
+  ;; Corp als "credit"-Aktionen (siehe game.test-framework/take-credits) --
+  ;; ein swap! auf 0 VOR take-credits wuerde von diesen Restklicks wieder
+  ;; hochgefuellt (2 verbleibende Klicks nach Ice-Wall-Install -> 0+2=2
+  ;; Credits, Ice Wall waere mit Rez-Kosten 1 wieder bezahlbar). Der swap!
+  ;; muss darum NACH take-credits erfolgen, damit die Corp beim Run
+  ;; tatsaechlich 0 Credits hat.
+  (do-game
+    (new-game {:corp {:hand ["Ice Wall"] :credits 10}})
+    (play-from-hand state :corp "Ice Wall" "HQ")
+    (take-credits state :corp)
+    (swap! state assoc-in [:corp :credit] 0)
+    (run-on state "HQ")
+    (let [bot (hc/heuristic-corp-bot 1)]
+      (game-runner/decide-one! {:state state :side :corp :kind :run :bot bot})
+      (is (not (rezzed? (get-ice state :hq 0)))))))

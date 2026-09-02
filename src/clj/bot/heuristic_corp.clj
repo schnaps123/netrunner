@@ -265,17 +265,43 @@
     {:option (first (filter #(= label (:label %)) options))
      :reason (str "heuristic-corp: Mulligan-Check -> Ice=" ice-count " Econ=" econ-count " -> " label)}))
 
+;; --- Rez-Entscheidung im Run-Fenster ---
+
+(defn- rez-decision
+  "Rez lohnt sich immer, wenn bezahlbar: unrezztes Ice schützt nichts (nur
+  rezztes Ice feuert Subroutinen), ein bereits laufender Run bietet keinen
+  Vorteil durch Zurückhalten (kein Bluffing-Repertoire in v1 — siehe
+  Design-Spec, Korrektur-Absatz zur Rez-Entscheidung: ein Vorher/Nachher-
+  Vergleich über bot.eval aus Corp-Sicht wäre degeneriert, weil die Corp
+  ihre eigenen Ice-Werte immer kennt)."
+  [view legal-actions]
+  (if-let [act (find-legal legal-actions "rez" (constantly true))]
+    (let [ice (get-in act [:args :card])
+          rez-cost (or (:cost ice) 0)
+          corp-credit (get-in view [:corp :credit] 0)]
+      (if (<= rez-cost corp-credit)
+        {:action act
+         :reason (str "heuristic-corp: Rez -> " (:title ice) " rez-cost=" rez-cost
+                      " <= corp-credit(" corp-credit "), Subroutinen sollen wirken")}
+        {:action (find-legal legal-actions "continue" (constantly true))
+         :reason (str "heuristic-corp: kein Rez -> " (:title ice) " rez-cost=" rez-cost
+                      " > corp-credit(" corp-credit ")")}))
+    {:action (first legal-actions)
+     :reason "heuristic-corp: Rez-Fenster ohne Rez-Option, erste angebotene Option"}))
+
 ;; --- Bot ---
 
 (defrecord HeuristicCorpBot [random-delegate]
   bp/Bot
   (decide [_ view legal-actions]
-    (or (try-install-ice view legal-actions)
-        (try-install-agenda view legal-actions)
-        (try-score-line view legal-actions)
-        (try-econ view legal-actions)
-        {:action (first legal-actions)
-         :reason "heuristic-corp: Regel 6 (Fallback) -> keine Regel griff, erste Option"}))
+    (if (:run view)
+      (rez-decision view legal-actions)
+      (or (try-install-ice view legal-actions)
+          (try-install-agenda view legal-actions)
+          (try-score-line view legal-actions)
+          (try-econ view legal-actions)
+          {:action (first legal-actions)
+           :reason "heuristic-corp: Regel 6 (Fallback) -> keine Regel griff, erste Option"})))
   (on-prompt [_ view prompt options]
     (if (= :mulligan (:prompt-type prompt))
       (mulligan-decision view options)
