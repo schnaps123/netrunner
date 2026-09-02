@@ -1,6 +1,7 @@
 (ns bot.eval-test
   (:require
    [bot.eval :as beval]
+   [bot.view :as bview]
    [clojure.test :refer :all]
    [game.core :as core]
    [game.test-framework :refer :all]))
@@ -145,3 +146,121 @@
     (is (zero? (+ (:score (beval/evaluate state :corp))
                    (:score (beval/evaluate state :runner))))
         "Threat-Level-Vorzeichen (+Corp/-Runner) bleibt nullsummen-konsistent")))
+
+(deftest breaker-typ-mismatch-senkt-bedrohung-nicht
+  ;; Carmen ist ein Sentry-Breaker (siehe game.cards.programs/"Carmen":
+  ;; (break-sub 1 1 "Sentry")). Gegen Ice Wall (Barrier) darf er die
+  ;; Bedrohungsschaetzung NICHT senken -- ein Bug vor diesem Fix nahm den
+  ;; global staerksten installierten Breaker unabhaengig vom Ice-Typ.
+  (do-game
+    (new-game {:corp {:hand ["Ice Wall"]}
+               :runner {:hand ["Carmen"] :credits 10}})
+    (play-from-hand state :corp "Ice Wall" "HQ")
+    (rez state :corp (get-ice state :hq 0))
+    (let [ohne-breaker (get-in (beval/evaluate state :runner) [:servers :hq :estimated-cost])]
+      (take-credits state :corp)
+      (play-from-hand state :runner "Carmen")
+      (let [mit-falschem-typ (get-in (beval/evaluate state :runner) [:servers :hq :estimated-cost])]
+        (is (= 2 ohne-breaker) "Baseline: raw-ice-cost(Staerke 1, Breaker 0) = max(1, 1-0+1) = 2")
+        (is (= mit-falschem-typ ohne-breaker)
+            "Carmen (Sentry) hilft nicht gegen Ice Wall (Barrier) -- Typ-Match, kein globaler Staerkenwert")))))
+
+(deftest echte-break-kosten-corroder-vs-ice-wall
+  ;; Corroder: Staerke 2, Fracter, "1cr: break 1 Barrier-Sub", "1cr: +1
+  ;; Staerke". Ice Wall: Staerke 1, 1 Subroutine. Keine Pump noetig (2>=1),
+  ;; 1 Sub * 1cr = 1.
+  (do-game
+    (new-game {:corp {:hand ["Ice Wall"]}
+               :runner {:hand ["Corroder"] :credits 10}})
+    (play-from-hand state :corp "Ice Wall" "HQ")
+    (rez state :corp (get-ice state :hq 0))
+    (take-credits state :corp)
+    (play-from-hand state :runner "Corroder")
+    (is (= 1 (get-in (beval/evaluate state :runner) [:servers :hq :estimated-cost])))))
+
+(deftest echte-break-kosten-skalieren-mit-subroutine-anzahl
+  ;; Battlement: Staerke 2, Barrier, 2 Subroutinen ("End the run" je zweimal).
+  ;; Corroder (Staerke 2) braucht keine Pump, aber 2 Subs * 1cr = 2.
+  (do-game
+    (new-game {:corp {:hand ["Battlement"] :credits 10}
+               :runner {:hand ["Corroder"] :credits 10}})
+    (play-from-hand state :corp "Battlement" "HQ")
+    (rez state :corp (get-ice state :hq 0))
+    (take-credits state :corp)
+    (play-from-hand state :runner "Corroder")
+    (is (= 2 (get-in (beval/evaluate state :runner) [:servers :hq :estimated-cost])))))
+
+(deftest echte-break-kosten-inkl-pump
+  ;; Bastion: Staerke 4, Barrier, 1 Subroutine. Corroder (Staerke 2) muss
+  ;; erst 2 Staerke pumpen (2 * 1cr = 2cr), dann 1 Sub brechen (1cr) = 3cr.
+  (do-game
+    (new-game {:corp {:hand ["Bastion"] :credits 10}
+               :runner {:hand ["Corroder"] :credits 10}})
+    (play-from-hand state :corp "Bastion" "HQ")
+    (rez state :corp (get-ice state :hq 0))
+    (take-credits state :corp)
+    (play-from-hand state :runner "Corroder")
+    (is (= 3 (get-in (beval/evaluate state :runner) [:servers :hq :estimated-cost])))))
+
+(deftest exotische-break-kosten-fallen-auf-staerke-delta-zurueck
+  ;; Musaazi bricht Sentry-Subs fuer Virus-Counter statt Credits (kein
+  ;; reiner Credit-Preis) -- die Kosten-Schaetzung darf nicht crashen,
+  ;; sondern faellt auf die (typgenaue) Staerke-Delta-Schaetzung aus Task 1
+  ;; zurueck. Tithe: Staerke 1, Sentry, 2 Subs. Musaazi: Staerke 1.
+  (do-game
+    (new-game {:corp {:hand ["Tithe"]}
+               :runner {:hand ["Musaazi"] :credits 10}})
+    (play-from-hand state :corp "Tithe" "HQ")
+    (rez state :corp (get-ice state :hq 0))
+    (let [ohne-breaker (get-in (beval/evaluate state :runner) [:servers :hq :estimated-cost])]
+      (take-credits state :corp)
+      (play-from-hand state :runner "Musaazi")
+      (let [mit-musaazi (get-in (beval/evaluate state :runner) [:servers :hq :estimated-cost])]
+        (is (= 2 ohne-breaker) "raw-ice-cost(Staerke 1, Breaker 0) = max(1, 1-0+1) = 2")
+        (is (= 1 mit-musaazi)
+            "Typ-Match (Sentry) senkt weiterhin die Staerke-Delta-Schaetzung auf max(1, 1-1+1)=1, kein Crash trotz Virus-Kosten")))))
+
+(deftest evaluate-view-liefert-dasselbe-wie-evaluate
+  (do-game
+    (new-game {:corp {:hand ["Ice Wall"]}})
+    (play-from-hand state :corp "Ice Wall" "HQ")
+    (rez state :corp (get-ice state :hq 0))
+    (is (= (beval/evaluate state :corp)
+           (beval/evaluate-view (bview/view-for state :corp) :corp))
+        "evaluate ist nur noch ein duenner Wrapper um evaluate-view")))
+
+(deftest unrezztes-eigenes-ice-liefert-echte-break-kosten
+  ;; Corp sieht die eigenen Subroutinen/Staerke IMMER, unabhaengig vom
+  ;; Rez-Status (is-public? ist fuer :corp auf eigene Karten immer wahr,
+  ;; game.core.card/is-public? side-Zweig :corp) -- best-breach-cost darf
+  ;; fuer unrezztes eigenes Ice nicht auf subs-count=0 zurueckfallen und
+  ;; die Bedrohung systematisch unterschaetzen.
+  (do-game
+    (new-game {:corp {:hand ["Bastion"] :credits 10}
+               :runner {:hand ["Corroder"] :credits 10}})
+    (play-from-hand state :corp "Bastion" "New remote")
+    (take-credits state :corp)
+    (play-from-hand state :runner "Corroder")
+    (take-credits state :runner)
+    (let [unrezzt (get-in (beval/evaluate state :corp) [:servers :remote1 :estimated-cost])]
+      (rez state :corp (get-ice state :remote1 0))
+      (let [rezzt (get-in (beval/evaluate state :corp) [:servers :remote1 :estimated-cost])]
+        (is (= 3 unrezzt) "Pump(2*1cr)+Break(1*1cr)=3, identisch zum rezzten Fall")
+        (is (= unrezzt rezzt))))))
+
+(deftest servers-threat-ist-oeffentlich-und-view-basiert
+  (do-game
+    (new-game {:corp {:hand ["Ice Wall"]}})
+    (play-from-hand state :corp "Ice Wall" "HQ")
+    (rez state :corp (get-ice state :hq 0))
+    (is (contains? (beval/servers-threat (bview/view-for state :corp)) :hq))))
+
+(deftest evaluate-view-lehnt-ungueltige-side-ab
+  ;; Die View traegt selbst keinen Marker, fuer welche Seite sie berechnet
+  ;; wurde (game.core.diffs/state-summary haengt keinen an) -- eine echte
+  ;; Herleitung waere fragil (z.B. leere Hand macht "wessen Hand ist voll
+  ;; sichtbar" mehrdeutig). Ein Precondition-Assert faengt wenigstens den
+  ;; haeufigsten Fehler ab: side vertauscht/falsch getippt.
+  (do-game
+    (new-game)
+    (is (thrown? AssertionError (beval/evaluate-view (bview/view-for state :corp) :not-a-side)))))

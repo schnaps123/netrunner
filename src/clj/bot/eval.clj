@@ -5,7 +5,8 @@
   einen späteren Trainer, deshalb gilt dieselbe Sichtbarkeitsbeschränkung wie
   für echte Bot-Entscheidungen."
   (:require
-   [bot.view :as view]))
+   [bot.view :as view]
+   [game.core.card-defs :refer [card-def]]))
 
 (def ^:private AGENDA-WEIGHT
   "Agenda-Punkte zählen überproportional: nahe an 7 (bzw. weniger bei
@@ -45,10 +46,40 @@
 (defn- icebreaker? [program]
   (some #{"Icebreaker"} (:subtypes program)))
 
+(defn- ice-subtypes
+  "Öffentlich sichtbare Subtypen dieses Ice — leer, wenn unbekannt (siehe
+  ice-known? weiter unten)."
+  [ice]
+  (set (:subtypes ice)))
+
+(defn- matches-ice-type?
+  [breaks ice-subtypes]
+  (or (contains? breaks "All")
+      (boolean (some breaks ice-subtypes))))
+
+(defn- installed-breakers [runner-view]
+  (filter icebreaker? (get-in runner-view [:rig :program])))
+
+(defn- matching-breaker-strength
+  "Stärkster installierter Icebreaker, dessen statisch gelesener Subtyp
+  (card-def — öffentliche, gedruckte Karteninfo, identisch für jede Kopie
+  einer Karte) zu `ice-subtypes` passt. Kein Typ-Match ⇒ 0, selbst wenn ein
+  ANDERER Breaker installiert ist (Fix des v1-Bugs: vorher zählte der
+  global stärkste Breaker unabhängig vom Ice-Typ, siehe
+  bot-eval-v1-backlog)."
+  [runner-view ice-subtypes]
+  (->> (installed-breakers runner-view)
+       (filter (fn [c]
+                 (some #(and (:break %) (matches-ice-type? (:breaks %) ice-subtypes))
+                       (:abilities (card-def c)))))
+       (map #(or (:current-strength %) (:strength %) 0))
+       (apply max 0)))
+
 (defn- best-breaker-strength
   "Stärkster installierter Icebreaker des Runners, 0 falls keiner installiert.
-  v1-Vereinfachung: kein Fracter/Decoder/Killer-Matching gegen den Ice-Typ,
-  nur der global stärkste Brecher (siehe Backlog-Notiz für Schritt 7)."
+  Fallback-Wert für Ice mit unbekanntem Subtyp (unrezztes gegnerisches Ice —
+  dort kann ohnehin nicht typgenau gematcht werden, siehe
+  matching-breaker-strength)."
   [runner-view]
   (->> (get-in runner-view [:rig :program])
        (filter icebreaker?)
@@ -73,33 +104,116 @@
 (defn- raw-ice-cost [strength best-breaker-strength]
   (max 1 (inc (- strength best-breaker-strength))))
 
+(defn- credit-cost
+  "Summe reiner Credit-Kosten aus einem break-sub/strength-pump-Kostenvektor
+  (Vektor von game.core.payment/->c-Maps), oder nil, wenn eine Komponente
+  kein reiner Credit-Betrag ist (X-Cost, Virus-/Power-Counter, Trash, ...) —
+  dann ist die Ability für eine Kosten-Schätzung nicht nutzbar (dokumentierte
+  Vereinfachung, siehe Design-Spec Teil 1, Punkt 6)."
+  [cost]
+  (when (and (seq cost)
+             (every? #(and (= :credit (:cost/type %)) (number? (:cost/amount %))) cost))
+    (reduce + 0 (map :cost/amount cost))))
+
+(defn- min-or-nil [xs]
+  (when (seq xs) (apply min xs)))
+
+(defn- pump-abilities [card]
+  (filter :pump (:abilities (card-def card))))
+
+(defn- break-abilities [card ice-subtypes]
+  (filter #(and (:break %) (matches-ice-type? (:breaks %) ice-subtypes))
+          (:abilities (card-def card))))
+
+(defn- pump-cost-for-ice
+  "Credits, um `card` mindestens `needed` zusätzliche Stärke zu geben — 0,
+  wenn keine Stärke fehlt, nil ohne nutzbare (reine Credit-)Pump-Ability."
+  [card needed]
+  (if (<= needed 0)
+    0
+    (min-or-nil
+     (keep (fn [ab]
+             (let [per-use (:pump ab)
+                   cost (credit-cost (:cost ab))]
+               (when (and cost (number? per-use) (pos? per-use))
+                 (* cost (long (Math/ceil (/ (double needed) per-use)))))))
+           (pump-abilities card)))))
+
+(defn- break-cost-for-ice
+  "Credits, um alle `subs-count` Subroutinen dieses Ice mit `card` zu
+  brechen — 0 ohne Subroutinen, nil ohne passende (reine Credit-)Break-
+  Ability. `:break 0` bedeutet 'beliebig viele Subs in einer Zahlung'."
+  [card ice-subtypes subs-count]
+  (if (zero? subs-count)
+    0
+    (min-or-nil
+     (keep (fn [ab]
+             (let [n (:break ab)
+                   per-use (if (pos? n) n subs-count)
+                   cost (credit-cost (:break-cost ab))]
+               (when cost
+                 (* cost (long (Math/ceil (/ (double subs-count) per-use)))))))
+           (break-abilities card ice-subtypes)))))
+
+(defn- breaker-cost-for-ice
+  [card ice-strength ice-subtypes subs-count]
+  (let [breaker-strength (or (:current-strength card) (:strength card) 0)
+        needed (max 0 (- ice-strength breaker-strength))
+        pump (pump-cost-for-ice card needed)]
+    (when pump
+      (when-let [break (break-cost-for-ice card ice-subtypes subs-count)]
+        (+ pump break)))))
+
+(defn- best-breach-cost
+  "Echte, minimale Credit-Kosten über alle installierten Icebreaker hinweg,
+  dieses Ice vollständig zu durchbrechen — nil, wenn kein installierter
+  Breaker mit reinen Credit-Kosten passt (Fallback: raw-ice-cost, siehe
+  ice-threat)."
+  [runner-view ice-strength ice-subtypes subs-count]
+  (min-or-nil
+   (keep #(breaker-cost-for-ice % ice-strength ice-subtypes subs-count)
+         (installed-breakers runner-view))))
+
 (defn- ice-threat
   "Geschätzte Kosten, dieses eine Ice zu überwinden, aus Sicht der Seite, die
   `ice` sieht. Bereits rezztes Ice ist bezahlt (kein Abschlag); noch nicht
   rezztes Ice ist nur eine potenzielle Bedrohung — kann die Corp die (echten
   oder geschätzten) Rez-Kosten mit ihren aktuell sichtbaren Credits nicht
-  aufbringen, wird die Rohbedrohung mit UNAFFORDABLE-ICE-DISCOUNT abgewertet."
-  [ice corp-credit best-breaker-strength]
+  aufbringen, wird die Rohbedrohung mit UNAFFORDABLE-ICE-DISCOUNT abgewertet.
+  Bekannter Ice-Subtyp: erst echte Credit-Kosten versuchen
+  (best-breach-cost), sonst Stärke-Delta-Fallback mit typgenauem Breaker
+  (matching-breaker-strength)."
+  [ice corp-credit runner-view best-breaker-strength]
   (let [[strength rez-cost] (ice-strength+cost ice)
-        raw (raw-ice-cost strength best-breaker-strength)]
+        subtypes (ice-subtypes ice)
+        subs-count (count (:subroutines ice))
+        effective-breaker-strength (if (seq subtypes)
+                                      (matching-breaker-strength runner-view subtypes)
+                                      best-breaker-strength)
+        real (when (seq subtypes)
+               (best-breach-cost runner-view strength subtypes subs-count))
+        raw (or real (raw-ice-cost strength effective-breaker-strength))]
     (if (or (:rezzed ice) (>= corp-credit (or rez-cost 0)))
       raw
       (* raw UNAFFORDABLE-ICE-DISCOUNT))))
 
 (defn- server-threat
-  [server-view corp-credit runner-credit best-breaker-strength]
+  [server-view corp-credit runner-credit runner-view best-breaker-strength]
   (let [ices (:ices server-view)
-        estimated-cost (reduce + 0 (map #(ice-threat % corp-credit best-breaker-strength) ices))]
+        estimated-cost (reduce + 0 (map #(ice-threat % corp-credit runner-view best-breaker-strength) ices))]
     {:ice-count (count ices)
      :rezzed-count (count (filter :rezzed ices))
      :ice-strength (reduce + 0 (map #(first (ice-strength+cost %)) ices))
      :estimated-cost estimated-cost
      :runner-can-afford? (<= estimated-cost runner-credit)}))
 
-(defn- servers-threat
+(defn servers-threat
   "Pro Corp-Server eine Bedrohungsschätzung: kommt der Runner vermutlich
   durch, und was kostet es ihn? Nutzt nur öffentlich sichtbare Felder der
-  View (Credits beider Seiten, installierte Icebreaker, Ice-Status)."
+  View (Credits beider Seiten, installierte Icebreaker, Ice-Status).
+  Öffentlich: Bot-Konsumenten wie bot.heuristic-corp bekommen nur eine View,
+  nie rohen @state (Projektregel Informations-Hygiene) — sie greifen direkt
+  hierauf zu, statt evaluate/2 zu nutzen, das intern state anfordert."
   [v]
   (let [corp-credit (get-in v [:corp :credit] 0)
         runner-view (get v :runner)
@@ -107,18 +221,27 @@
         best-breaker (best-breaker-strength runner-view)]
     (into {}
           (map (fn [[server-kw server-view]]
-                 [server-kw (server-threat server-view corp-credit runner-credit best-breaker)]))
+                 [server-kw (server-threat server-view corp-credit runner-credit runner-view best-breaker)]))
           (get-in v [:corp :servers]))))
 
-(defn evaluate
-  "Bewertet `state` aus Sicht von `side` (:corp oder :runner), ausschließlich
-  über die zensierte View (bot.view/view-for). Liefert eine Map mit
-  Einzeldimensionen und einem gewichteten Gesamtscore (:score), positiv = gut
-  für `side`. Symmetrisch: (evaluate state :corp) und (evaluate state
-  :runner) summieren sich in ihrem :score zu 0."
-  [state side]
-  (let [v (view/view-for state side)
-        opp (opponent side)
+(defn evaluate-view
+  "Wie `evaluate`, nimmt aber eine bereits berechnete View statt `state` —
+  der Einstiegspunkt für Bot-Konsumenten, die nur eine View besitzen (siehe
+  servers-threat-Docstring). `side` ist redundant zu `v` (die View selbst
+  trägt keinen Marker, für welche Seite sie berechnet wurde —
+  game.core.diffs/state-summary hängt keinen an, und ihn herzuleiten wäre
+  fragil: eine leere Hand macht 'wessen Hand ist voll sichtbar' mehrdeutig)
+  und könnte ihr widersprechen (View für :corp berechnet, aber :runner
+  übergeben) — der Precondition-Assert fängt wenigstens vertauschte/falsch
+  getippte side-Argumente ab.
+  :score gilt als NULLSUMME zwischen (evaluate-view v :corp) und
+  (evaluate-view v :runner) nur, wenn das Board vollständig sichtbar ist
+  (alles rezzt) — sonst weichen die servers-threat-Schätzungen beider
+  Seiten für unrezztes Ice asymmetrisch voneinander ab (UNKNOWN-ICE-*-
+  Defaults vs. echte Werte)."
+  [v side]
+  {:pre [(contains? #{:corp :runner} side)]}
+  (let [opp (opponent side)
         own (get v side)
         their (get v opp)
         credit-diff (- (:credit own 0) (:credit their 0))
@@ -140,3 +263,12 @@
      :servers servers
      :threat-level threat-level
      :score score}))
+
+(defn evaluate
+  "Bewertet `state` aus Sicht von `side` (:corp oder :runner) — dünner
+  Wrapper um evaluate-view (siehe dort), berechnet nur die View. :score ist
+  nur bei vollständig sichtbarem Board (alles rezzt) eine echte Nullsumme
+  zwischen (evaluate state :corp) und (evaluate state :runner) — siehe
+  evaluate-view-Docstring."
+  [state side]
+  (evaluate-view (view/view-for state side) side))

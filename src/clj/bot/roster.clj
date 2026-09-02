@@ -4,12 +4,14 @@
   die Web-Laufzeit (bot.seat) liegt eine Schicht darüber."
   (:require
    [bot.cards :as cards]
+   [bot.heuristic-corp :as heuristic-corp]
    [bot.random :as random]
    [clojure.string :as str]))
 
 (def difficulties
   "Registry Schwierigkeitsgrad -> Factory (0-arity, liefert bot.protocol/Bot)."
-  {"random" #(random/random-bot (.nextLong (java.util.Random.)))})
+  {"random" #(random/random-bot (.nextLong (java.util.Random.)))
+   "heuristic" #(heuristic-corp/heuristic-corp-bot (.nextLong (java.util.Random.)))})
 
 (defn difficulty? [d]
   (contains? difficulties d))

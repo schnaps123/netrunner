@@ -7,7 +7,7 @@
 (defn action [command args label]
   {:command command :args args :label label})
 
-(defn- server-name
+(defn server-name
   "View-Zone-Keyword (:hq :rd :archives :remoteN) -> Servername für click-run."
   [zone-kw]
   (case zone-kw
@@ -78,6 +78,8 @@
        [(action "draw" nil "draw 1 card")])
      (hand-plays view :corp)
      (ability-actions view :corp)
+     (for [c installed :when (not (:rezzed c))]
+       (action "rez" {:card c} (str "rez " (or (:title c) "facedown card"))))
      (when (pos? credits)
        (for [c installed :when (advanceable? c)]
          (action "advance" {:card c} (str "advance " (or (:title c) "facedown card")))))

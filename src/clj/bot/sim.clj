@@ -11,7 +11,9 @@
   (:require
    [bot.cards :as cards]
    [bot.game-runner :as game-runner]
+   [bot.heuristic-corp :as heuristic-corp]
    [bot.random :as random]
+   [bot.roster :as roster]
    [clojure.edn :as edn]
    [clojure.java.io :as io]
    [clojure.string :as str]
@@ -34,19 +36,32 @@
                              (let [v (vec coll)]
                                (nth v (.nextInt rng (count v)))))})
 
+(defn- bot-for
+  "Baut einen seedbaren Bot für `difficulty`. `bot.roster/difficulties`s
+  Random-Factory ist NICHT seedbar (`(.nextLong (java.util.Random.))`) —
+  für den Sim-Runner bleibt Determinismus über den Partie-Seed Pflicht
+  (siehe Namespace-Docstring), deshalb wird hier bewusst NICHT über
+  `bot.roster/make-bot` gebaut, sondern direkt über die seedbaren
+  Konstruktoren."
+  [difficulty seed]
+  (case difficulty
+    "heuristic" (heuristic-corp/heuristic-corp-bot seed)
+    (random/random-bot seed)))
+
 (defn run-one
   "Eine Partie mit festem Seed. Ergebnis-Map:
   {:seed :outcome (:completed | :step-cap | :stuck-prompt | :exception)
    :turns :steps :winner :error :error-data}"
-  [{:keys [seed corp-deck runner-deck max-steps log-path]}]
+  [{:keys [seed corp-deck runner-deck max-steps log-path corp-difficulty runner-difficulty]
+    :or {corp-difficulty "random" runner-difficulty "random"}}]
   (when log-path
     (io/delete-file (io/file log-path) true))
   (let [rng (java.util.Random. (long seed))]
     (try
       (let [result (with-redefs-fn (seeded-shuffle-fns rng)
                      #(game-runner/run-game
-                       {:corp-bot (random/random-bot (* 2 seed))
-                        :runner-bot (random/random-bot (inc (* 2 seed)))
+                       {:corp-bot (bot-for corp-difficulty (* 2 seed))
+                        :runner-bot (bot-for runner-difficulty (inc (* 2 seed)))
                         :corp-deck corp-deck
                         :runner-deck runner-deck
                         :max-steps max-steps
@@ -111,6 +126,10 @@
     :default 5 :parse-fn #(Long/parseLong %)]
    ["-s" "--seed BASE" "Basis-Seed; Partie i läuft mit Seed BASE+i"
     :default 42 :parse-fn #(Long/parseLong %)]
+   [nil "--corp-bot DIFFICULTY" "Schwierigkeitsgrad der Corp (random|heuristic)"
+    :default "random" :validate [roster/difficulty? "unbekannter Schwierigkeitsgrad"]]
+   [nil "--runner-bot DIFFICULTY" "Schwierigkeitsgrad des Runners (random|heuristic)"
+    :default "random" :validate [roster/difficulty? "unbekannter Schwierigkeitsgrad"]]
    [nil "--corp-deck FILE" "EDN-Datei {:identity \"...\" :cards [[\"Titel\" Anzahl] ...]} (Default: System-Gateway-Corp-Starterdeck)"]
    [nil "--runner-deck FILE" "dito für den Runner (Default: System-Gateway-Runner-Starterdeck)"]
    [nil "--max-steps N" "Step-Cap pro Partie"
@@ -121,7 +140,7 @@
 
 (defn run-sim
   "Spielt n Partien und liefert {:results [...] :report String}."
-  [{:keys [games seed corp-deck runner-deck max-steps log-dir]}]
+  [{:keys [games seed corp-deck runner-deck max-steps log-dir corp-bot runner-bot]}]
   (cards/load-all-cards!)
   (let [corp-deck (if corp-deck (load-deck corp-deck) cards/gateway-corp)
         runner-deck (if runner-deck (load-deck runner-deck) cards/gateway-runner)
@@ -133,7 +152,9 @@
                                          :corp-deck corp-deck
                                          :runner-deck runner-deck
                                          :max-steps max-steps
-                                         :log-path (str log-dir "/game-" game-seed ".edn")})]
+                                         :log-path (str log-dir "/game-" game-seed ".edn")
+                                         :corp-difficulty (or corp-bot "random")
+                                         :runner-difficulty (or runner-bot "random")})]
                          (println "  ->" (name (:outcome r))
                                   (str (when (:turns r) (str "Züge=" (:turns r)))
                                        (when (:winner r) (str " Sieger=" (name (:winner r))))

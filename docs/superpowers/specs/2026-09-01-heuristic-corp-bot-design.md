@@ -19,6 +19,29 @@ Random-Runner (121/200 = 60,5 %). Schwelle fest in dieser Spec, nicht erst
 im Plan — sonst ist am Ende nicht objektiv entscheidbar, ob das Playbook
 etwas gebracht hat.
 
+Ergebnis 2026-09-02: **199/200 (99,5 %)** — `bin/bot-sim 200 --corp-bot
+heuristic --runner-bot random --seed 1 --log-dir
+logs/bot-sim/heuristic-vs-random` (0 hängende Prompts, 0 Step-Cap-Abbrüche,
+0 Exceptions, ⌀ 7,8 Züge/Partie). Schwelle deutlich übertroffen.
+
+Sieg-Gründe-Nachanalyse 2026-09-02 (200 Partien, Seeds 42–241, identischer
+Aufbau, Sieggrund über `(:reason @state)` statt nur `:winner` erfasst): 173
+Flatline, 25 Agenda (beide Corp), 1 Decked, 1 Agenda (beide Runner). **87 %
+der Corp-Siege sind Flatline, nicht Agenda** — Playbook-Verifikation per
+Decision-Log einer Agenda-Sieg-Partie zeigt Regel 1→5.x→2→3→4 in korrekter
+Reihenfolge (Zentralserver icen → Econ interleaved → Scoring-Remote →
+Agenda nur bei `estimated-cost > runner-credit+buffer` → advancen/scoren),
+Playbook damit als funktionierend bestätigt. Die Flatline-Mehrheit ist aber
+Artefakt des Random-Runners (installiert Breaker ohne sie beim Encounter
+gezielt einzusetzen, Jack-out ist Münzwurf) — kein Beleg für eine gezielte
+Kill-Strategie des Corp-Bots. **Abnahmekriterium für Schritt 7b
+(Heuristik-Runner):** aussagekräftiger Benchmark ist Heuristik-Corp vs.
+Heuristik-Runner (erwartet deutlich ausgeglichener als 199/200); dabei ist
+der Anteil Agenda-Siege gegenüber Flatlines die interessantere Kennzahl als
+reine Winrate — steigt er gegenüber der heutigen Vergleichsbasis (173
+Flatline / 25 Agenda / 1 Decked / 1 Runner-Agenda), spielt der Runner
+tatsächlich besser verteidigt.
+
 Voraussetzung (zuerst umzusetzen, siehe [[bot-eval-v1-backlog]]): `bot.eval`s
 Server-Bedrohungsschätzung nutzt aktuell (a) den global stärksten
 installierten Icebreaker ohne Typ-Matching und (b) einen groben
