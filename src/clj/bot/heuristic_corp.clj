@@ -160,7 +160,7 @@
             remaining (remaining-advancement agenda)
             score-act (find-legal legal-actions "score" #(= (:title agenda) (get-in % [:args :card :title])))
             advance-act (find-legal legal-actions "advance" #(= (:title agenda) (get-in % [:args :card :title])))
-            seamless-act (first-play-of-type legal-actions "Operation")]
+            seamless-act (first-play-of-titles legal-actions #{"Seamless Launch"})]
         (cond
           score-act
           {:action score-act
@@ -173,9 +173,12 @@
           ;; Remote -- estimated-cost 0 gilt sonst immer als unsicher). Nur
           ;; das offene, mehrzuegige Normal-Advancen unten bleibt sicherheits-
           ;; gated (siehe ASSUMED-RUNNER-INCOME-PER-TURN-Kommentar).
+          ;; seamless-act wird per Titel gesucht (first-play-of-titles), nicht
+          ;; per "erste spielbare Operation" -- sonst gewinnt eine frueher in
+          ;; der Hand liegende Operation (z.B. Hedge Fund) das Matching und
+          ;; die Score-Linie wird faelschlich uebersprungen.
           (and (<= remaining (+ clicks 2))
-               seamless-act
-               (= "Seamless Launch" (get-in seamless-act [:args :card :title])))
+               seamless-act)
           {:action seamless-act
            :reason (str "heuristic-corp: Regel 4 (Score-Linie) -> Seamless Launch auf "
                         (:title agenda) ", Restadvancement=" remaining " <= Klicks(" clicks ")+2")}

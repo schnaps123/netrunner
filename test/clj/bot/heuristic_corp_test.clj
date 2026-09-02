@@ -253,6 +253,36 @@
       (is (= 3 (get-counters (get-content state :remote1 0) :advancement))
           "Seamless Launch (+2) auf die Agenda gezielt, nicht auf ein anderes Ziel"))))
 
+(deftest regel-4-seamless-launch-score-linie-trotz-frueherer-econ-operation-in-hand
+  ;; Regressionstest fuer den Final-Review-Fund: try-score-line suchte den
+  ;; Seamless-Launch-Kandidaten frueher per first-play-of-type "Operation"
+  ;; (erste spielbare Operation IN HANDREIHENFOLGE), nicht per Titel. Steht
+  ;; eine andere spielbare Econ-Operation (Hedge Fund) vor Seamless Launch in
+  ;; der Hand, band sich seamless-act an Hedge Fund, der nachfolgende
+  ;; Titel-Vergleich schlug fehl, und die Score-Linie wurde faelschlich
+  ;; uebersprungen -- der Bot spielte stattdessen Hedge Fund (Regel 5.4).
+  ;; Aufbau wie regel-4-seamless-launch-score-linie oben, aber mit Hedge Fund
+  ;; VOR Seamless Launch in der Starthand (starting-hand haengt Karten in
+  ;; der uebergebenen Reihenfolge ans Handende an -- core/move ohne :front/
+  ;; :index fuegt am Ende ein, siehe game.core.moving/move).
+  (do-game
+    (new-game {:corp {:hand ["Priority Requisition"] :deck ["Hedge Fund" "Seamless Launch"] :credits 20}
+               :runner {:credits 0}})
+    (core/gain state :corp :click 5)
+    (play-from-hand state :corp "Priority Requisition" "New remote")
+    (click-advance state :corp (get-content state :remote1 0))
+    (take-credits state :corp)
+    (take-credits state :runner)
+    (starting-hand state :corp ["Hedge Fund" "Seamless Launch"])
+    (core/gain state :corp :click 5 :credit 10)
+    (is (= "Hedge Fund" (:title (first (get-in @state [:corp :hand]))))
+        "Testaufbau-Kontrolle: Hedge Fund liegt tatsaechlich vor Seamless Launch in der Hand")
+    (let [bot (hc/heuristic-corp-bot 1)]
+      (game-runner/decide-one! {:state state :side :corp :kind :action :bot bot})
+      (game-runner/decide-one! {:state state :side :corp :kind :prompt :bot bot})
+      (is (= 3 (get-counters (get-content state :remote1 0) :advancement))
+          "Seamless Launch (+2) muss trotz frueher in der Hand liegendem Hedge Fund gewaehlt werden"))))
+
 (deftest regel-5-1-econ-asset-installieren
   (do-game
     (new-game {:corp {:hand ["Regolith Mining License"] :credits 10}})
