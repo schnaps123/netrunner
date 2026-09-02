@@ -6,6 +6,7 @@
   für echte Bot-Entscheidungen."
   (:require
    [bot.view :as view]
+   [clojure.string :as str]
    [game.core.card-defs :refer [card-def]]))
 
 (def ^:private AGENDA-WEIGHT
@@ -34,6 +35,20 @@
   bis zum tatsächlichen Run noch Credits sammeln, ein Bluff ohne aktuelle
   Deckung ist also abgeschwächt, nicht wertlos. Justierbar."
   0.3)
+
+(def NO-ETR-DISCOUNT
+  "Abschlagsfaktor auf die Bedrohungsschätzung eines Ice OHNE 'End the
+  run'-Subroutine (ETR-Klassifikation, Backlog aus der Verteidigungs-
+  prioritäts-Spec). Ein Ice, das den Run gar nicht beenden kann (z.B.
+  Tithe: nur Netzschaden + Corp-Credit), taxiert praktisch nicht — ein
+  rationaler Runner tankt den Effekt statt zu brechen, egal wie teuer das
+  Brechen wäre. Kein Nullwert: schwerer Schaden (z.B. mehrfacher
+  Netzschaden nah am Flatline) kann das Tanken trotzdem unattraktiv
+  machen, das ist hier (noch) nicht modelliert — siehe Design-Spec, Punkt
+  'Nächste Phase'. Stärker als UNAFFORDABLE-ICE-DISCOUNT: 'kann den Run
+  nicht beenden' ist eine härtere Aussage als 'aktuell nicht bezahlbar'.
+  Justierbar."
+  0.2)
 
 (defn- opponent [side]
   (if (= side :corp) :runner :corp))
@@ -103,6 +118,20 @@
 
 (defn- raw-ice-cost [strength best-breaker-strength]
   (max 1 (inc (- strength best-breaker-strength))))
+
+(defn- has-etr-subroutine?
+  "Hat dieses (bekannte) Ice mindestens eine 'End the run'-Subroutine?
+  Statische, gedruckte Karteninfo aus card-def (identisch für jede Kopie —
+  gleiches Introspektions-Muster wie break-/pump-abilities weiter unten),
+  keine Laufzeit-Simulation. Substring-Match auf :label statt exaktem
+  String, damit auch bedingte ETR-Varianten zählen (z.B. Whitespace: 'End
+  the run if the Runner has 6 [Credits] or less') — ein Ice, das den Run
+  UNTER MANCHEN Bedingungen beenden kann, ist immer noch kein reines
+  Tank-Ziel."
+  [ice]
+  (boolean
+   (some #(some-> (:label %) str/lower-case (str/includes? "end the run"))
+         (:subroutines (card-def ice)))))
 
 (defn- credit-cost
   "Summe reiner Credit-Kosten aus einem break-sub/strength-pump-Kostenvektor
@@ -182,7 +211,10 @@
   aufbringen, wird die Rohbedrohung mit UNAFFORDABLE-ICE-DISCOUNT abgewertet.
   Bekannter Ice-Subtyp: erst echte Credit-Kosten versuchen
   (best-breach-cost), sonst Stärke-Delta-Fallback mit typgenauem Breaker
-  (matching-breaker-strength)."
+  (matching-breaker-strength). Ice OHNE ETR-Subroutine (ice-known? nötig —
+  card-def braucht den echten Titel) wird zusätzlich mit NO-ETR-DISCOUNT
+  abgewertet: ein Runner tankt lieber den (nicht run-beendenden) Effekt,
+  statt für's Brechen zu zahlen."
   [ice corp-credit runner-view best-breaker-strength]
   (let [[strength rez-cost] (ice-strength+cost ice)
         subtypes (ice-subtypes ice)
@@ -192,7 +224,9 @@
                                       best-breaker-strength)
         real (when (seq subtypes)
                (best-breach-cost runner-view strength subtypes subs-count))
-        raw (or real (raw-ice-cost strength effective-breaker-strength))]
+        raw (or real (raw-ice-cost strength effective-breaker-strength))
+        etr-factor (if (and (ice-known? ice) (not (has-etr-subroutine? ice))) NO-ETR-DISCOUNT 1)
+        raw (* raw etr-factor)]
     (if (or (:rezzed ice) (>= corp-credit (or rez-cost 0)))
       raw
       (* raw UNAFFORDABLE-ICE-DISCOUNT))))

@@ -36,6 +36,15 @@
   (testing "difficulty fehlt im Entry, wenn nicht übergeben"
     (is (not (contains? (blog/decision-entry {:turn 1 :side :corp}) :difficulty)))))
 
+(deftest decision-entry-scoring-gap
+  ;; Scoring-Fenster-Zielmodell Phase 1: :scoring-gap (bot.heuristic-corp)
+  ;; muss den Filter in decision-entry ueberleben, sonst geht die
+  ;; Gap-Aggregation ueber die Decision-Logs ins Leere.
+  (testing "scoring-gap wird übernommen, wenn vorhanden"
+    (is (= #{:tax :credits} (:scoring-gap (blog/decision-entry {:turn 1 :side :corp :scoring-gap #{:tax :credits}})))))
+  (testing "scoring-gap fehlt im Entry, wenn nicht übergeben"
+    (is (not (contains? (blog/decision-entry {:turn 1 :side :corp}) :scoring-gap)))))
+
 (deftest append-event-schreibt-edn-zeile
   (let [f (java.io.File/createTempFile "bot-log" ".edn")
         path (.getPath f)]

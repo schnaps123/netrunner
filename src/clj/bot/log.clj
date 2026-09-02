@@ -12,7 +12,7 @@
   nil)
 
 (defn decision-entry
-  [{:keys [turn phase side kind options choice reason no-op difficulty]}]
+  [{:keys [turn phase side kind options choice reason no-op difficulty scoring-gap]}]
   (cond-> {:turn turn
            :phase phase
            :side side
@@ -21,7 +21,8 @@
            :choice choice
            :reason reason
            :no-op (boolean no-op)}
-    difficulty (assoc :difficulty difficulty)))
+    difficulty (assoc :difficulty difficulty)
+    scoring-gap (assoc :scoring-gap scoring-gap)))
 
 (defn append-decision!
   [path entry]

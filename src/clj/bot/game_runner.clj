@@ -133,6 +133,11 @@
                                          :choice (:label chosen)
                                          :reason (:reason decision)
                                          :no-op (not progressed?)}
+                                        ;; :scoring-gap ist bot.heuristic-corp-spezifisch
+                                        ;; (Scoring-Fenster-Zielmodell, Phase 1) -- andere
+                                        ;; Bots liefern ihn nicht, darum nur mergen, wenn da.
+                                        (when-let [gap (:scoring-gap decision)]
+                                          {:scoring-gap gap})
                                         log-extra)))
         (when-not progressed?
           (recur (vec (remove #{chosen} options))))))))

@@ -206,7 +206,12 @@
   ;; Musaazi bricht Sentry-Subs fuer Virus-Counter statt Credits (kein
   ;; reiner Credit-Preis) -- die Kosten-Schaetzung darf nicht crashen,
   ;; sondern faellt auf die (typgenaue) Staerke-Delta-Schaetzung aus Task 1
-  ;; zurueck. Tithe: Staerke 1, Sentry, 2 Subs. Musaazi: Staerke 1.
+  ;; zurueck. Tithe: Staerke 1, Sentry, 2 Subs, KEINE ETR-Subroutine -- die
+  ;; rohen Werte (2 bzw. 1) werden seit der ETR-Klassifikation zusaetzlich
+  ;; mit NO-ETR-DISCOUNT abgewertet (siehe eigene ETR-Tests unten); dieser
+  ;; Test bleibt bewusst bei Tithe, um beide Effekte (exotische Kosten UND
+  ;; ETR-Abwertung) gemeinsam am selben, bereits etablierten Testfall zu
+  ;; zeigen.
   (do-game
     (new-game {:corp {:hand ["Tithe"]}
                :runner {:hand ["Musaazi"] :credits 10}})
@@ -216,9 +221,36 @@
       (take-credits state :corp)
       (play-from-hand state :runner "Musaazi")
       (let [mit-musaazi (get-in (beval/evaluate state :runner) [:servers :hq :estimated-cost])]
-        (is (= 2 ohne-breaker) "raw-ice-cost(Staerke 1, Breaker 0) = max(1, 1-0+1) = 2")
-        (is (= 1 mit-musaazi)
-            "Typ-Match (Sentry) senkt weiterhin die Staerke-Delta-Schaetzung auf max(1, 1-1+1)=1, kein Crash trotz Virus-Kosten")))))
+        (is (= (* 2 beval/NO-ETR-DISCOUNT) ohne-breaker)
+            "raw-ice-cost(Staerke 1, Breaker 0) = max(1, 1-0+1) = 2, mal NO-ETR-DISCOUNT (keine ETR-Sub)")
+        (is (= (* 1 beval/NO-ETR-DISCOUNT) mit-musaazi)
+            "Typ-Match (Sentry) senkt weiterhin die Staerke-Delta-Schaetzung auf max(1, 1-1+1)=1, mal NO-ETR-DISCOUNT, kein Crash trotz Virus-Kosten")))))
+
+(deftest ice-ohne-etr-subroutine-wird-stark-abgewertet
+  ;; Kern der ETR-Klassifikation (Backlog aus der Verteidigungspriorität-
+  ;; Spec): Tithe hat KEINE "End the run"-Subroutine -- der Runner kann es
+  ;; einfach durchlaufen und den Netzschaden tanken, es taxiert praktisch
+  ;; nicht. Gleiche Staerke (1), gleiche Subroutine-Anzahl waere bei Ice
+  ;; Wall (HAT ETR) irrelevant fuer den Vergleich -- deshalb direkter
+  ;; Vergleich beider Karten ohne installierten Breaker (raw-ice-cost-Pfad).
+  (do-game
+    (new-game {:corp {:hand ["Tithe" "Ice Wall"] :credits 10}})
+    (play-from-hand state :corp "Tithe" "HQ")
+    (play-from-hand state :corp "Ice Wall" "R&D")
+    (rez state :corp (get-ice state :hq 0))
+    (rez state :corp (get-ice state :rd 0))
+    (let [tithe-cost (get-in (beval/evaluate state :runner) [:servers :hq :estimated-cost])
+          ice-wall-cost (get-in (beval/evaluate state :runner) [:servers :rd :estimated-cost])]
+      (is (< tithe-cost ice-wall-cost)
+          "Tithe (keine ETR) schaetzt deutlich niedriger als Ice Wall (hat ETR), trotz gleicher Staerke"))))
+
+(deftest ice-mit-etr-subroutine-bleibt-unrabattiert
+  (do-game
+    (new-game {:corp {:hand ["Ice Wall"] :credits 10}})
+    (play-from-hand state :corp "Ice Wall" "HQ")
+    (rez state :corp (get-ice state :hq 0))
+    (is (= 2 (get-in (beval/evaluate state :runner) [:servers :hq :estimated-cost]))
+        "Ice Wall hat eine ETR-Subroutine -- kein NO-ETR-DISCOUNT, unveraenderter raw-ice-cost")))
 
 (deftest evaluate-view-liefert-dasselbe-wie-evaluate
   (do-game
