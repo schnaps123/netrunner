@@ -140,6 +140,24 @@ braucht entweder einen Gegner, der Lücken tatsächlich ausnutzt (Heuristik-
 Runner, siehe Schritt 7b in [[heuristic-corp-bot-design]]), oder Bewertung
 am Spielbrett durch einen Menschen.
 
+**Statistisches Rauschen bei 200 Partien (2026-09-02, aus dem Regel-2.5-
+Vergleich beobachtet):** die Zufallsstreuung der Agenda-Siegzahl liegt bei
+200 Partien in der Größenordnung von **±5** — Unterschiede unterhalb von
+etwa zehn Siegen zwischen zwei Konfigurationen sind NICHT belastbar
+interpretierbar, auch wenn sie auf den ersten Blick nach einem Trend
+aussehen. Für feinere Vergleiche (z.B. "hat Parameter X um 3 Siege
+geholfen?") reicht ein einzelner 200-Partien-Lauf nicht — nötig ist
+entweder deutlich mehr Partien (Rauschen sinkt mit 1/√n) oder ein
+Paarvergleich mit IDENTISCHEN Seeds in beiden Konfigurationen (dieselbe
+Partie A/B getestet, Differenz statt Rohzahl vergleichen — eliminiert einen
+Großteil der Zufallsstreuung, weil beide Läufe an denselben Stellen Glück/
+Pech haben). Eine Regel, die sachlich begründet ist (z.B. Regel 2.5:
+gezieltes Graben nach der einzigen fehlenden Scoring-Fenster-Zutat ist
+eindeutig richtig), bleibt darum auch dann drin, wenn ein einzelner
+200-Partien-Lauf keine eindeutige Verbesserung zeigt — der Benchmark
+bestätigt oder widerlegt solche Regeln nicht zuverlässig, er dient nur der
+groben Regressionserkennung (s.o.).
+
 ## Nächste Phase (unmittelbar nach diesem Wertmodell, nicht optional)
 
 **Status 2026-09-02: umgesetzt** (`bot.eval/has-etr-subroutine?` +
