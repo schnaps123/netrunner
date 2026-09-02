@@ -114,6 +114,16 @@
 (defn- opposite-side [side]
   (if (= side "Corp") "Runner" "Corp"))
 
+(defn- clamped-difficulty
+  "Faellt auf \"random\" zurueck, wenn `difficulty` nicht fuer ALLE `sides`
+  verfuegbar ist (z.B. \"heuristic\" gibt es bisher nur fuer :corp) —
+  Verteidigung gegen inkonsistente/veraltete Clients; das Lobby-UI filtert
+  die Auswahl im Normalfall bereits passend vor."
+  [difficulty sides]
+  (if (every? #(roster/available-for-side? difficulty %) sides)
+    difficulty
+    "random"))
+
 (defn- apply-bot-setup
   "Erweitert eine frisch erzeugte Lobby um Bot-Player. vs-bot: Bot auf der
   Gegenseite des Erstellers (Any Side ⇒ Corp). bot-vs-bot: beide Seiten Bots,
@@ -123,20 +133,24 @@
     "vs-bot"
     (let [human-side (if (= side "Runner") "Runner" "Corp")
           bot-side (opposite-side human-side)
+          difficulty (clamped-difficulty difficulty [(side-from-str bot-side)])
           human (assoc (first (:players lobby)) :side human-side)]
       (assoc lobby
+             :difficulty difficulty
              :players [human (roster/bot-player bot-side difficulty)]
-             :bots {(side-from-str bot-side) (roster/make-bot difficulty)}
+             :bots {(side-from-str bot-side) (roster/make-bot difficulty (side-from-str bot-side))}
              :bot-thinking? (atom false)))
     "bot-vs-bot"
-    (assoc lobby
-           :players [(roster/bot-player "Corp" difficulty)
-                     (roster/bot-player "Runner" difficulty)]
-           :spectators [{:uid uid :user user}]
-           :allow-spectator true
-           :bots {:corp (roster/make-bot difficulty)
-                  :runner (roster/make-bot difficulty)}
-           :bot-thinking? (atom false))))
+    (let [difficulty (clamped-difficulty difficulty [:corp :runner])]
+      (assoc lobby
+             :difficulty difficulty
+             :players [(roster/bot-player "Corp" difficulty)
+                       (roster/bot-player "Runner" difficulty)]
+             :spectators [{:uid uid :user user}]
+             :allow-spectator true
+             :bots {:corp (roster/make-bot difficulty :corp)
+                    :runner (roster/make-bot difficulty :runner)}
+             :bot-thinking? (atom false)))))
 
 (defn create-new-lobby
   [{uid :uid

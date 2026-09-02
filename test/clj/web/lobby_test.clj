@@ -146,6 +146,25 @@
       (is (nil? (:bots l)))
       (is (= 1 (count (:players l)))))))
 
+(deftest heuristic-nur-fuer-corp-seite
+  (testing "vs-bot, Mensch=Runner (Bot=Corp): heuristic bleibt heuristic"
+    (let [l (mklobby {:bot-game "vs-bot" :side "Runner" :difficulty "heuristic"
+                      :format "system-gateway" :title "t" :room "casual"})]
+      (is (= "heuristic" (:difficulty l)))
+      (is (= "Bot (Heuristic)" (get-in l [:players 1 :user :username])))))
+  (testing "vs-bot, Mensch=Corp (Bot=Runner): heuristic faellt auf random zurueck"
+    (let [l (mklobby {:bot-game "vs-bot" :side "Corp" :difficulty "heuristic"
+                      :format "system-gateway" :title "t" :room "casual"})]
+      (is (= "random" (:difficulty l))
+          "Kein Heuristik-Bot fuer die Runner-Seite -> Fallback statt kaputter Lobby")
+      (is (= "Bot (Random)" (get-in l [:players 1 :user :username])))))
+  (testing "bot-vs-bot: heuristic (nur Corp-faehig) faellt fuer BEIDE Seiten auf random zurueck"
+    (let [l (mklobby {:bot-game "bot-vs-bot" :difficulty "heuristic"
+                      :format "system-gateway" :title "t" :room "casual"})]
+      (is (= "random" (:difficulty l)))
+      (is (= "Bot (Random)" (get-in l [:players 0 :user :username])))
+      (is (= "Bot (Random)" (get-in l [:players 1 :user :username]))))))
+
 (deftest bot-lobby-nicht-joinbar
   ;; Spec: fremde Spieler können Bot-Lobbys nicht joinen. Trägt der bestehende
   ;; Guard in insert-user-as-player (nur bei genau 1 Player) — hier festnageln.

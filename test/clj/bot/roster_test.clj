@@ -31,3 +31,14 @@
   (is (roster/difficulty? "heuristic"))
   (is (satisfies? bp/Bot (roster/make-bot "heuristic")))
   (is (= "Bot (Heuristic)" (roster/bot-username "heuristic"))))
+
+(deftest seitenbewusste-make-bot
+  (is (roster/available-for-side? "random" :corp))
+  (is (roster/available-for-side? "random" :runner))
+  (is (roster/available-for-side? "heuristic" :corp))
+  (is (not (roster/available-for-side? "heuristic" :runner))
+      "Heuristik-Corp-Bot ist kein Runner-Bot")
+  (is (satisfies? bp/Bot (roster/make-bot "heuristic" :corp)))
+  (is (satisfies? bp/Bot (roster/make-bot "random" :runner)))
+  (is (thrown? clojure.lang.ExceptionInfo (roster/make-bot "heuristic" :runner))
+      "Fuer die Runner-Seite existiert (noch) kein Heuristik-Bot"))

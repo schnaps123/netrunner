@@ -37,13 +37,18 @@
                                (nth v (.nextInt rng (count v)))))})
 
 (defn- bot-for
-  "Baut einen seedbaren Bot für `difficulty`. `bot.roster/difficulties`s
+  "Baut einen seedbaren Bot für `difficulty` auf `side`. `bot.roster`s
   Random-Factory ist NICHT seedbar (`(.nextLong (java.util.Random.))`) —
   für den Sim-Runner bleibt Determinismus über den Partie-Seed Pflicht
   (siehe Namespace-Docstring), deshalb wird hier bewusst NICHT über
   `bot.roster/make-bot` gebaut, sondern direkt über die seedbaren
-  Konstruktoren."
-  [difficulty seed]
+  Konstruktoren. Wirft ex-info, wenn `difficulty` für `side` keinen Bot hat
+  (z.B. \"heuristic\" + :runner) — sonst würde --runner-bot heuristic
+  still­schweigend einen Corp-Playbook-Bot in den Runner-Sitz setzen."
+  [difficulty side seed]
+  (when-not (roster/available-for-side? difficulty side)
+    (throw (ex-info "Schwierigkeitsgrad nicht für diese Seite verfügbar"
+                    {:difficulty difficulty :side side})))
   (case difficulty
     "heuristic" (heuristic-corp/heuristic-corp-bot seed)
     (random/random-bot seed)))
@@ -60,8 +65,8 @@
     (try
       (let [result (with-redefs-fn (seeded-shuffle-fns rng)
                      #(game-runner/run-game
-                       {:corp-bot (bot-for corp-difficulty (* 2 seed))
-                        :runner-bot (bot-for runner-difficulty (inc (* 2 seed)))
+                       {:corp-bot (bot-for corp-difficulty :corp (* 2 seed))
+                        :runner-bot (bot-for runner-difficulty :runner (inc (* 2 seed)))
                         :corp-deck corp-deck
                         :runner-deck runner-deck
                         :max-steps max-steps
@@ -127,9 +132,11 @@
    ["-s" "--seed BASE" "Basis-Seed; Partie i läuft mit Seed BASE+i"
     :default 42 :parse-fn #(Long/parseLong %)]
    [nil "--corp-bot DIFFICULTY" "Schwierigkeitsgrad der Corp (random|heuristic)"
-    :default "random" :validate [roster/difficulty? "unbekannter Schwierigkeitsgrad"]]
-   [nil "--runner-bot DIFFICULTY" "Schwierigkeitsgrad des Runners (random|heuristic)"
-    :default "random" :validate [roster/difficulty? "unbekannter Schwierigkeitsgrad"]]
+    :default "random" :validate [#(roster/available-for-side? % :corp)
+                                  "unbekannter Schwierigkeitsgrad oder nicht für Corp verfügbar"]]
+   [nil "--runner-bot DIFFICULTY" "Schwierigkeitsgrad des Runners (random)"
+    :default "random" :validate [#(roster/available-for-side? % :runner)
+                                  "unbekannter Schwierigkeitsgrad oder nicht für Runner verfügbar"]]
    [nil "--corp-deck FILE" "EDN-Datei {:identity \"...\" :cards [[\"Titel\" Anzahl] ...]} (Default: System-Gateway-Corp-Starterdeck)"]
    [nil "--runner-deck FILE" "dito für den Runner (Default: System-Gateway-Runner-Starterdeck)"]
    [nil "--max-steps N" "Step-Cap pro Partie"
