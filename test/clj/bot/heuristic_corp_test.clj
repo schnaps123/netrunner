@@ -14,7 +14,13 @@
    [game.core.card :refer [get-counters rezzed?]]
    [game.test-framework :refer :all]))
 
-(deftest decide-delegiert-noch-vollstaendig-an-random-v1-skeleton
+(deftest decide-liefert-immer-eine-legale-aktion-mit-heuristic-corp-begruendung
+  ;; Bis Task 9 delegierte decide fuer nicht abgedeckte Faelle an random-bot
+  ;; (daher der urspruengliche Testname "...v1-skeleton"); seit Regel 6
+  ;; (finaler Fallback: erste angebotene Option) deckt decide JEDEN Fall
+  ;; selbst ab -- random-delegate wird nur noch von on-prompt genutzt (siehe
+  ;; Task-9-Brief). Der Reason-String traegt darum immer den
+  ;; "heuristic-corp:"-Prefix, nie mehr "random-bot".
   (do-game
     (new-game)
     (let [bot (hc/heuristic-corp-bot 1)
@@ -22,7 +28,7 @@
           actions (legal/turn-actions v :corp)
           decision (bp/decide bot v actions)]
       (is (some #{(:action decision)} actions))
-      (is (str/includes? (:reason decision) "random-bot")))))
+      (is (str/starts-with? (:reason decision) "heuristic-corp:")))))
 
 (deftest mulligan-ohne-ice-und-econ
   (do-game
@@ -246,3 +252,54 @@
       (game-runner/decide-one! {:state state :side :corp :kind :prompt :bot bot})
       (is (= 3 (get-counters (get-content state :remote1 0) :advancement))
           "Seamless Launch (+2) auf die Agenda gezielt, nicht auf ein anderes Ziel"))))
+
+(deftest regel-5-1-econ-asset-installieren
+  (do-game
+    (new-game {:corp {:hand ["Regolith Mining License"] :credits 10}})
+    (let [bot (hc/heuristic-corp-bot 1)]
+      (game-runner/decide-one! {:state state :side :corp :kind :action :bot bot})
+      (game-runner/decide-one! {:state state :side :corp :kind :prompt :bot bot})
+      (is (= "Regolith Mining License" (:title (get-content state :remote1 0)))))))
+
+(deftest regel-5-2-econ-asset-rezzen
+  (do-game
+    (new-game {:corp {:hand ["Regolith Mining License"] :credits 10}})
+    (play-from-hand state :corp "Regolith Mining License" "New remote")
+    (let [bot (hc/heuristic-corp-bot 1)]
+      (game-runner/decide-one! {:state state :side :corp :kind :action :bot bot})
+      (is (rezzed? (get-content state :remote1 0))))))
+
+(deftest regel-5-3-klick-fuer-credits-vor-generischem-credit-klick
+  (do-game
+    (new-game {:corp {:hand ["Regolith Mining License"] :credits 10}})
+    (play-from-hand state :corp "Regolith Mining License" "New remote")
+    (rez state :corp (get-content state :remote1 0))
+    (let [bot (hc/heuristic-corp-bot 1)
+          credits-before (get-in @state [:corp :credit])]
+      (game-runner/decide-one! {:state state :side :corp :kind :action :bot bot})
+      (is (= (+ 3 credits-before) (get-in @state [:corp :credit]))
+          "Regolith gibt 3 Credits pro Klick, generischer Klick nur 1"))))
+
+(deftest regel-5-4-econ-operation-spielen
+  (do-game
+    ;; :credits 0 (wie im Brief) waere hier ein Test-Bug: Hedge Fund kostet 5
+    ;; Credits, mit 0 Credits ist die Karte gar nicht :playable und taucht nie
+    ;; in legal-actions auf -- try-play-econ-operation koennte sie dann NIE
+    ;; finden, unabhaengig von der Implementierung. :credits 5 (Start-Credits,
+    ;; analog operations_test.clj) macht sie bezahlbar und erhaelt gleichzeitig
+    ;; die im Brief erwartete Netto-Differenz von +4 (5 -5 +9 = 9).
+    (new-game {:corp {:hand ["Hedge Fund"] :credits 5}})
+    (let [bot (hc/heuristic-corp-bot 1)
+          credits-before (get-in @state [:corp :credit])]
+      (game-runner/decide-one! {:state state :side :corp :kind :action :bot bot})
+      (is (= (+ 4 credits-before) (get-in @state [:corp :credit]))
+          "Hedge Fund gibt netto +4 (Kosten 5, Ertrag 9 -- oder wie auch immer, Hauptsache Operation gespielt")
+      (is (empty? (get-in @state [:corp :hand]))))))
+
+(deftest regel-5-5-credit-klick-als-letzter-fallback
+  (do-game
+    (new-game {:corp {:hand []}})
+    (let [bot (hc/heuristic-corp-bot 1)
+          credits-before (get-in @state [:corp :credit])]
+      (game-runner/decide-one! {:state state :side :corp :kind :action :bot bot})
+      (is (= (inc credits-before) (get-in @state [:corp :credit]))))))

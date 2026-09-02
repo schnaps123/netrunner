@@ -22,6 +22,17 @@
   System-Gateway-Starterdeck)."
   #{"Hedge Fund" "Government Subsidy" "Nico Campaign" "Regolith Mining License"})
 
+(def ECON-ASSET-CARDS
+  #{"Regolith Mining License" "Nico Campaign"})
+
+(def ECON-CLICK-ABILITY-CARDS
+  "Econ-Assets mit einer manuellen Klick-Ability, die einem generischen
+  1-Credit-Klick vorgezogen wird (Regel 5.3)."
+  #{"Regolith Mining License"})
+
+(def ECON-OPERATION-CARDS
+  #{"Hedge Fund" "Government Subsidy"})
+
 (def CENTRAL-ICE-PRIORITY
   "Reihenfolge, in der ungeschützte Zentralserver geict werden (Regel 1)."
   [:hq :rd :archives])
@@ -92,6 +103,10 @@
 
 (defn- first-play-of-type [legal-actions type-str]
   (first (filter #(and (= "play" (:command %)) (= type-str (get-in % [:args :card :type])))
+                 legal-actions)))
+
+(defn- first-play-of-titles [legal-actions titles]
+  (first (filter #(and (= "play" (:command %)) (contains? titles (get-in % [:args :card :title])))
                  legal-actions)))
 
 ;; --- Regel 1+2: Ice installieren ---
@@ -181,6 +196,48 @@
     (when-let [agenda (first (filter agenda-card? (server-content view zone)))]
       (first (filter #(and (= :card (:type %)) (= (:cid agenda) (get-in % [:card :cid]))) options)))))
 
+;; --- Regel 5: Econ ---
+
+(defn- try-install-econ-asset
+  [_view legal-actions]
+  (when-let [act (first-play-of-titles legal-actions ECON-ASSET-CARDS)]
+    {:action act
+     :reason (str "heuristic-corp: Regel 5.1 (Econ-Asset installieren) -> "
+                  (get-in act [:args :card :title]))}))
+
+(defn- installed-unrezzed-econ-asset [view]
+  (->> (vals (corp-servers view))
+       (mapcat :content)
+       (filter #(and (contains? ECON-ASSET-CARDS (:title %)) (not (:rezzed %))))
+       first))
+
+(defn- try-rez-econ-asset
+  [view legal-actions]
+  (when-let [asset (installed-unrezzed-econ-asset view)]
+    (when-let [act (find-legal legal-actions "rez" #(= (:cid asset) (get-in % [:args :card :cid])))]
+      {:action act :reason (str "heuristic-corp: Regel 5.2 (Econ-Asset rezzen) -> " (:title asset))})))
+
+(defn- try-econ-click-ability
+  [_view legal-actions]
+  (when-let [act (find-legal legal-actions "ability"
+                             #(contains? ECON-CLICK-ABILITY-CARDS (get-in % [:args :card :title])))]
+    {:action act :reason (str "heuristic-corp: Regel 5.3 (Klick-fuer-Credits) -> " (:label act))}))
+
+(defn- try-play-econ-operation
+  [_view legal-actions]
+  (when-let [act (first-play-of-titles legal-actions ECON-OPERATION-CARDS)]
+    {:action act :reason (str "heuristic-corp: Regel 5.4 (Econ-Operation spielen) -> "
+                              (get-in act [:args :card :title]))}))
+
+(defn- try-econ
+  [view legal-actions]
+  (or (try-install-econ-asset view legal-actions)
+      (try-rez-econ-asset view legal-actions)
+      (try-econ-click-ability view legal-actions)
+      (try-play-econ-operation view legal-actions)
+      (when-let [act (find-legal legal-actions "credit" (constantly true))]
+        {:action act :reason "heuristic-corp: Regel 5.5 (Klick fuer Credit)"})))
+
 ;; --- Prompt-Routing: Server-Wahl ---
 
 (defn- select-target-server
@@ -190,6 +247,7 @@
   (case (:type card)
     "ICE" (some-> (ice-install-target view) server-label)
     "Agenda" (some-> (agenda-install-target view) server-label)
+    "Asset" (when (contains? ECON-ASSET-CARDS (:title card)) "New remote")
     nil))
 
 (defn- choose-by-label [options label reason]
@@ -215,7 +273,9 @@
     (or (try-install-ice view legal-actions)
         (try-install-agenda view legal-actions)
         (try-score-line view legal-actions)
-        (bp/decide random-delegate view legal-actions)))
+        (try-econ view legal-actions)
+        {:action (first legal-actions)
+         :reason "heuristic-corp: Regel 6 (Fallback) -> keine Regel griff, erste Option"}))
   (on-prompt [_ view prompt options]
     (if (= :mulligan (:prompt-type prompt))
       (mulligan-decision view options)
