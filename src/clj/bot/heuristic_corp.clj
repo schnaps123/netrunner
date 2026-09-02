@@ -127,6 +127,60 @@
                       ASSUMED-RUNNER-INCOME-PER-TURN ") -> sicher, installiere "
                       (get-in act [:args :card :title]))}))))
 
+(defn- find-legal [legal-actions command pred]
+  (first (filter #(and (= command (:command %)) (pred %)) legal-actions)))
+
+(defn- remaining-advancement [agenda]
+  (- (or (:current-advancement-requirement agenda) 0)
+     (+ (:advance-counter agenda 0) (:extra-advance-counter agenda 0))))
+
+;; --- Regel 4: Scoren ---
+
+(defn- try-score-line
+  [view legal-actions]
+  (when-let [zone (scoring-remote-zone view)]
+    (when (remote-has-agenda? view zone)
+      (let [agenda (first (filter agenda-card? (server-content view zone)))
+            clicks (get-in view [:corp :click] 0)
+            remaining (remaining-advancement agenda)
+            score-act (find-legal legal-actions "score" #(= (:title agenda) (get-in % [:args :card :title])))
+            advance-act (find-legal legal-actions "advance" #(= (:title agenda) (get-in % [:args :card :title])))
+            seamless-act (first-play-of-type legal-actions "Operation")]
+        (cond
+          score-act
+          {:action score-act
+           :reason (str "heuristic-corp: Regel 4 (Scoren) -> " (:title agenda) " ist fertig advanced, score")}
+
+          ;; Deadline-Score-Linie geht der Sicherheitspruefung vor: ist das
+          ;; Restadvancement diesen Zug per Seamless Launch abschliessbar,
+          ;; wird geschlossen, unabhaengig davon, ob der Server nach der
+          ;; Sicherheitsheuristik "sicher" waere (z.B. noch kein Ice im
+          ;; Remote -- estimated-cost 0 gilt sonst immer als unsicher). Nur
+          ;; das offene, mehrzuegige Normal-Advancen unten bleibt sicherheits-
+          ;; gated (siehe ASSUMED-RUNNER-INCOME-PER-TURN-Kommentar).
+          (and (<= remaining (+ clicks 2))
+               seamless-act
+               (= "Seamless Launch" (get-in seamless-act [:args :card :title])))
+          {:action seamless-act
+           :reason (str "heuristic-corp: Regel 4 (Score-Linie) -> Seamless Launch auf "
+                        (:title agenda) ", Restadvancement=" remaining " <= Klicks(" clicks ")+2")}
+
+          (not (safe-for-commitment? view zone))
+          nil
+
+          advance-act
+          {:action advance-act
+           :reason (str "heuristic-corp: Regel 4 (weiter advancen) -> " (:title agenda)
+                        " Restadvancement=" remaining)})))))
+
+;; --- Prompt-Routing: Seamless-Launch-Ziel ---
+
+(defn- select-seamless-target
+  [view options]
+  (when-let [zone (scoring-remote-zone view)]
+    (when-let [agenda (first (filter agenda-card? (server-content view zone)))]
+      (first (filter #(and (= :card (:type %)) (= (:cid agenda) (get-in % [:card :cid]))) options)))))
+
 ;; --- Prompt-Routing: Server-Wahl ---
 
 (defn- select-target-server
@@ -160,6 +214,7 @@
   (decide [_ view legal-actions]
     (or (try-install-ice view legal-actions)
         (try-install-agenda view legal-actions)
+        (try-score-line view legal-actions)
         (bp/decide random-delegate view legal-actions)))
   (on-prompt [_ view prompt options]
     (if (= :mulligan (:prompt-type prompt))
@@ -167,6 +222,9 @@
       (or (when-let [label (select-target-server view (:card prompt))]
             (choose-by-label options label
                               (str "heuristic-corp: Server-Wahl fuer " (:title (:card prompt)) " -> " label)))
+          (when (= :select (:prompt-type prompt))
+            (when-let [opt (select-seamless-target view options)]
+              {:option opt :reason (str "heuristic-corp: Seamless-Launch-Ziel -> " (:label opt))}))
           (bp/on-prompt random-delegate view prompt options)))))
 
 (defn heuristic-corp-bot

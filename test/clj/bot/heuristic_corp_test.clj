@@ -183,3 +183,66 @@
           "Remote unsicher (Runner kann die geringe Ice-Wall-Bedrohung leicht bezahlen) -> keine Agenda")
       (is (= 2 (count (get-ice state :remote1)))
           "stattdessen greift Regel 2: weiteres Ice statt Agenda-Install"))))
+
+(deftest regel-4-score-fertig-advancte-agenda-sofort
+  ;; Hostile Takeover: advancementcost 2 -- zwei Advance-Klicks vorab
+  ;; manuell (nicht ueber den Bot), damit die Agenda beim Bot-Aufruf schon
+  ;; fertig advanced ist und Regel 4 sofort scoren muss statt weiter
+  ;; advancen zu wollen.
+  (do-game
+    (new-game {:corp {:hand ["Hostile Takeover"] :credits 20}})
+    (play-from-hand state :corp "Hostile Takeover" "New remote")
+    (core/gain state :corp :click 10 :credit 10)
+    (dotimes [_ 2] (click-advance state :corp (get-content state :remote1 0)))
+    (let [bot (hc/heuristic-corp-bot 1)]
+      (game-runner/decide-one! {:state state :side :corp :kind :action :bot bot})
+      (is (= 1 (count (get-scored state :corp)))))))
+
+(deftest regel-4-advanct-normal-wenn-sicher-und-keine-score-linie
+  ;; Bastion (Staerke 4, Rez-Kosten 4) statt Ice Wall fuer den Remote: ohne
+  ;; installierten Runner-Breaker liegt raw-ice-cost(4,0)=5 ueber dem
+  ;; Sicherheitspuffer (0 Runner-Credits + 4 Puffer = 4) -- der Server gilt
+  ;; als sicher (ein einzelner Ice Wall waere mit Kosten 2 <= 4 IMMER
+  ;; "unsicher" gewesen, unabhaengig vom Runner-Credit-Stand). Zentralserver
+  ;; werden mit Ice Wall vorbereitet, nur damit Regel 1 nicht mehr greift.
+  (do-game
+    (new-game {:corp {:hand ["Priority Requisition" "Ice Wall" "Ice Wall" "Ice Wall" "Bastion"]
+                      :credits 20}
+               :runner {:credits 0}})
+    (core/gain state :corp :click 10)
+    (play-from-hand state :corp "Ice Wall" "HQ")
+    (play-from-hand state :corp "Ice Wall" "R&D")
+    (play-from-hand state :corp "Ice Wall" "Archives")
+    (play-from-hand state :corp "Bastion" "New remote")
+    (rez state :corp (get-ice state :remote1 0))
+    (play-from-hand state :corp "Priority Requisition" "Server 1")
+    (let [bot (hc/heuristic-corp-bot 1)]
+      (game-runner/decide-one! {:state state :side :corp :kind :action :bot bot})
+      (is (= 1 (get-counters (get-content state :remote1 0) :advancement))))))
+
+(deftest regel-4-seamless-launch-score-linie
+  ;; Priority Requisition (Advancement-Kosten 5) hat schon 1 Advancement aus
+  ;; einer vorherigen Runde (Rest 4). 8 verfuegbare Klicks diesen Zug (Rest
+  ;; 4 <= 8+2) -> die Deadline-Bedingung greift, und Regel 4 bevorzugt die
+  ;; Seamless-Launch-Linie GRUNDSAETZLICH vor normalem Advancen, sobald sie
+  ;; verfuegbar ist (siehe cond-Reihenfolge in try-score-line) -- die
+  ;; Zaehlerpruefung (1 -> 3) beweist, dass genau EIN Seamless-Launch-Play
+  ;; entschieden wurde, nicht ein einzelner Klick-Advance (waere 1 -> 2).
+  (do-game
+    ;; :deck explizit noetig -- starting-hand zieht NUR aus dem Deck-Pool,
+    ;; der ohne :deck-Angabe komplett in die Starthand wandert (siehe
+    ;; Kommentar in eval_test.clj/credit-diff-Test), waere also sonst leer.
+    (new-game {:corp {:hand ["Priority Requisition"] :deck ["Seamless Launch"] :credits 20}
+               :runner {:credits 0}})
+    (core/gain state :corp :click 5)
+    (play-from-hand state :corp "Priority Requisition" "New remote")
+    (click-advance state :corp (get-content state :remote1 0))
+    (take-credits state :corp)
+    (take-credits state :runner)
+    (starting-hand state :corp ["Seamless Launch"])
+    (core/gain state :corp :click 5)
+    (let [bot (hc/heuristic-corp-bot 1)]
+      (game-runner/decide-one! {:state state :side :corp :kind :action :bot bot})
+      (game-runner/decide-one! {:state state :side :corp :kind :prompt :bot bot})
+      (is (= 3 (get-counters (get-content state :remote1 0) :advancement))
+          "Seamless Launch (+2) auf die Agenda gezielt, nicht auf ein anderes Ziel"))))
